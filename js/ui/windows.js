@@ -6,6 +6,7 @@ export class WindowManager {
     this.topZ = 20;
     this.activeWindowId = 'win-phone';
     this.windows = new Map();
+    this.badges = new Map();
     this.initDragHandlers();
   }
 
@@ -41,6 +42,18 @@ export class WindowManager {
     }
     this.focusWindow(this.activeWindowId);
     this.renderTaskbar();
+  }
+
+  setBadges(badgeMap) {
+    let changed = false;
+    for (const id of this.windows.keys()) {
+      const next = badgeMap[id] || '';
+      if ((this.badges.get(id) || '') !== next) {
+        this.badges.set(id, next);
+        changed = true;
+      }
+    }
+    if (changed) this.renderTaskbar();
   }
 
   isMobileViewport() {
@@ -120,6 +133,15 @@ export class WindowManager {
       }
       btn.dataset.targetWin = win.id;
       btn.textContent = win.title;
+
+      const badge = this.badges.get(win.id);
+      if (badge) {
+        const dot = document.createElement('span');
+        dot.className = `task-badge is-${badge}`;
+        dot.textContent = '!';
+        btn.appendChild(dot);
+      }
+
       btn.addEventListener('click', () => {
         if (this.isMobileViewport()) {
           this.focusWindow(win.id);

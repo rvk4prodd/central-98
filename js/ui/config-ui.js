@@ -1,4 +1,4 @@
-import { AI_PROVIDERS, getActiveApiKey } from '../engine/ai-client.js';
+import { AI_PROVIDERS, getActiveApiKey, isAiReady } from '../engine/ai-client.js';
 import { soundEngine } from '../engine/audio.js';
 
 function escapeHtml(text) {
@@ -14,6 +14,10 @@ export class ConfigUi {
     this.el = containerEl;
     this.game = game;
     this.activeTab = 'ai'; // 'ai' | 'voice' | 'avatar'
+    this.modelSearch = '';
+    this.modelFilter = 'all'; // 'all' | 'recommended' | 'free' | 'fast'
+    this.modelFetchNotice = '';
+    this.isFetchingModels = false;
     this.testStatus = '';
     this.testOk = null;
     this.voiceStatus = '';
@@ -22,6 +26,13 @@ export class ConfigUi {
   }
 
   bindEvents() {
+    this.el.addEventListener('input', (e) => {
+      if (e.target.id === 'cfg-model-search') {
+        this.modelSearch = e.target.value;
+        this.renderModelPickerOnly();
+      }
+    });
+
     this.el.addEventListener('click', async (e) => {
       const tabBtn = e.target.closest('button[data-cfg-tab]');
       if (tabBtn) {
@@ -30,10 +41,19 @@ export class ConfigUi {
         return;
       }
 
-      const presetBtn = e.target.closest('button[data-model-preset]');
-      if (presetBtn) {
-        const model = presetBtn.dataset.modelPreset;
+      const filterBtn = e.target.closest('button[data-model-filter]');
+      if (filterBtn) {
+        this.modelFilter = filterBtn.dataset.modelFilter;
+        this.render();
+        return;
+      }
+
+      const modelPickBtn = e.target.closest('button[data-pick-model]');
+      if (modelPickBtn) {
+        this.saveCurrentTabInputs();
+        const model = modelPickBtn.dataset.pickModel;
         this.game.updateAiConfig({ model });
+        this.game.notify(`Modelo selecionado: ${model}`);
         return;
       }
 
@@ -41,9 +61,21 @@ export class ConfigUi {
       if (!btn) return;
       const act = btn.dataset.cfgAction;
 
-      if (act === 'test') {
+      if (act === 'fetch-models') {
         this.saveCurrentTabInputs();
-        this.testStatus = 'Testando conexão...';
+        this.isFetchingModels = true;
+        this.modelFetchNotice = 'Consultando API de modelos...';
+        this.render();
+        const res = await this.game.fetchModelsForCurrentProvider();
+        this.isFetchingModels = false;
+        this.modelFetchNotice = res.notice || '';
+        this.render();
+      } else if (act === 'auto-pick') {
+        this.saveCurrentTabInputs();
+        this.game.autoSelectBestModel();
+      } else if (act === 'test') {
+        this.saveCurrentTabInputs();
+        this.testStatus = 'Testando conexão real com a IA...';
         this.testOk = null;
         this.render();
         const res = await this.game.testAiConnection();
@@ -80,6 +112,8 @@ export class ConfigUi {
         const defaultModel = AI_PROVIDERS[provider]?.defaultModel || '';
         this.testStatus = '';
         this.testOk = null;
+        this.modelFetchNotice = '';
+        this.modelSearch = '';
         this.game.updateAiConfig({ provider, model: defaultModel });
       } else if (el.id === 'cfg-tts-provider') {
         this.game.updateAiConfig({ ttsProvider: el.value });
@@ -102,11 +136,22 @@ export class ConfigUi {
       }
     });
 
-    this.el.addEventListener('submit', (e) => {
+    this.el.addEventListener('submit', async (e) => {
       if (e.target.id === 'ai-config-form') {
         e.preventDefault();
         this.saveCurrentTabInputs();
-        this.game.notify('API & configurações salvas localmente no navegador.');
+        this.testStatus = 'Validando chave e modelo...';
+        this.testOk = null;
+        this.render();
+        const res = await this.game.testAiConnection();
+        this.testStatus = res.message;
+        this.testOk = res.ok;
+        if (res.ok) {
+          this.game.notify('IA conectada e pronta para jogar!');
+        } else {
+          this.game.notify(`Falha na API: ${res.message}`, true);
+        }
+        this.render();
       } else if (e.target.id === 'voice-config-form') {
         e.preventDefault();
         this.saveVoiceInputs();
@@ -117,14 +162,14 @@ export class ConfigUi {
 
   saveCurrentTabInputs() {
     const provider = this.game.aiConfig.provider;
-    const key = document.getElementById('cfg-apikey')?.value ?? '';
-    const model = document.getElementById('cfg-model')?.value ?? '';
-    const customEndpoint = document.getElementById('cfg-endpoint')?.value ?? this.game.aiConfig.customEndpoint;
-    this.game.updateAiConfig({
-      model: model.trim(),
-      customEndpoint: customEndpoint.trim(),
-      keysByProvider: { [provider]: key.trim() }
-    });
+    const keyInput = document.getElementById('cfg-apikey');
+    const modelInput = document.getElementById('cfg-model');
+    const endpointInput = document.getElementById('cfg-endpoint');
+    const patch = {};
+    if (modelInput) patch.model = modelInput.value.trim();
+    if (endpointInput) patch.customEndpoint = endpointInput.value.trim();
+    if (keyInput) patch.keysByProvider = { [provider]: keyInput.value.trim() };
+    this.game.updateAiConfig(patch);
   }
 
   saveVoiceInputs() {
@@ -146,11 +191,59 @@ export class ConfigUi {
     });
   }
 
+  getFilteredModels() {
+    const cfg = this.game.aiConfig;
+    const all = this.game.getModelsForProvider(cfg.provider);
+    const q = this.modelSearch.trim().toLowerCase();
+
+    return all.filter((m) => {
+      if (q && !m.id.toLowerCase().includes(q) && !m.name.toLowerCase().includes(q)) {
+        return false;
+      }
+      if (this.modelFilter === 'recommended') return m.tier === 'recommended';
+      if (this.modelFilter === 'free') return m.isFree;
+      if (this.modelFilter === 'fast') return m.tier === 'fast' || m.tier === 'recommended';
+      return true;
+    });
+  }
+
+  renderModelPickerOnly() {
+    const listEl = document.getElementById('cfg-model-picker-list');
+    if (!listEl) return;
+    listEl.innerHTML = this.buildModelRowsHtml();
+  }
+
+  buildModelRowsHtml() {
+    const cfg = this.game.aiConfig;
+    const models = this.getFilteredModels();
+    if (!models.length) {
+      return '<div class="muted-note">Nenhum modelo encontrado para esse filtro.</div>';
+    }
+    return models
+      .slice(0, 40)
+      .map((m) => {
+        const active = cfg.model === m.id;
+        const badgesHtml = (m.badges || [])
+          .map((b) => `<span class="tag ${b === 'Grátis' ? 'tag-ok' : b === 'Recomendado' ? 'tag-accent' : ''}">${escapeHtml(b)}</span>`)
+          .join(' ');
+        return `
+          <button type="button" class="model-option ${active ? 'is-selected' : ''}" data-pick-model="${escapeHtml(m.id)}">
+            <div class="model-option-top">
+              <span class="model-id">${escapeHtml(m.id)}</span>
+              <span class="model-badges">${badgesHtml}</span>
+            </div>
+            <div class="model-reason">${escapeHtml(m.reason)}</div>
+          </button>
+        `;
+      })
+      .join('');
+  }
+
   render() {
     const cfg = this.game.aiConfig;
     const tabs = `
       <div class="subtabs">
-        <button type="button" class="subtab-btn ${this.activeTab === 'ai' ? 'is-active' : ''}" data-cfg-tab="ai">APIs de IA (11)</button>
+        <button type="button" class="subtab-btn ${this.activeTab === 'ai' ? 'is-active' : ''}" data-cfg-tab="ai">APIs & Modelos</button>
         <button type="button" class="subtab-btn ${this.activeTab === 'voice' ? 'is-active' : ''}" data-cfg-tab="voice">Vozes Neurais</button>
         <button type="button" class="subtab-btn ${this.activeTab === 'avatar' ? 'is-active' : ''}" data-cfg-tab="avatar">Personagem 2D</button>
       </div>
@@ -170,7 +263,7 @@ export class ConfigUi {
         ${tabs}
         <form id="voice-config-form" class="cfg-form">
           <div class="cfg-notice">
-            Para vozes humanas de verdade, use <strong>Google Gemini Neural TTS</strong> (funciona direto com sua chave Gemini!), <strong>ElevenLabs</strong> ou <strong>OpenAI gpt-4o-mini-tts</strong>.
+            Para vozes humanas de verdade, use <strong>Google Gemini Neural TTS</strong> (usa a mesma chave Gemini!), <strong>ElevenLabs</strong> ou <strong>OpenAI gpt-4o-mini-tts</strong>.
           </div>
 
           <label class="cfg-field">
@@ -187,8 +280,8 @@ export class ConfigUi {
           ${
             cfg.ttsProvider === 'gemini_tts'
               ? `<label class="cfg-field">
-                   <span>Gemini API Key para Voz (deixe vazio para usar a mesma da aba IA)</span>
-                   <input id="cfg-gemini-tts-key" type="password" class="win-input" value="${escapeHtml(cfg.geminiTtsKey)}" placeholder="${cfg.keysByProvider?.gemini ? 'Usando chave Gemini já salva na aba IA' : 'AIza...'}" />
+                   <span>Gemini API Key para Voz (opcional se já salvou na aba APIs)</span>
+                   <input id="cfg-gemini-tts-key" type="password" class="win-input" value="${escapeHtml(cfg.geminiTtsKey)}" placeholder="${cfg.keysByProvider?.gemini ? 'Usando chave Gemini já salva na aba APIs' : 'AIza...'}" />
                  </label>`
               : ''
           }
@@ -206,7 +299,7 @@ export class ConfigUi {
             cfg.ttsProvider === 'elevenlabs'
               ? `<div class="cfg-row-2">
                    <label class="cfg-field">
-                     <span>ElevenLabs API Key (local)</span>
+                     <span>ElevenLabs API Key</span>
                      <input id="cfg-eleven-key" type="password" class="win-input" value="${escapeHtml(cfg.elevenLabsKey)}" placeholder="xi-api-key..." />
                    </label>
                    <label class="cfg-field">
@@ -224,7 +317,7 @@ export class ConfigUi {
             cfg.ttsProvider === 'openai'
               ? `<div class="cfg-row-2">
                    <label class="cfg-field">
-                     <span>OpenAI Key (ou usa a chave OpenAI da aba IA)</span>
+                     <span>OpenAI Key (ou usa chave OpenAI da aba APIs)</span>
                      <input id="cfg-openai-tts-key" type="password" class="win-input" value="${escapeHtml(cfg.openaiTtsKey)}" placeholder="sk-..." />
                    </label>
                    <label class="cfg-field">
@@ -265,7 +358,7 @@ export class ConfigUi {
           </div>
 
           <div class="cfg-checks">
-            <label><input id="cfg-phone-filter" type="checkbox" ${cfg.phoneFilter ? 'checked' : ''} /> Filtro de linha telefônica realista (310–3300Hz)</label>
+            <label><input id="cfg-phone-filter" type="checkbox" ${cfg.phoneFilter ? 'checked' : ''} /> Efeito de linha telefônica (260–3800Hz)</label>
             <label><input id="cfg-voice-enabled" type="checkbox" ${cfg.voiceEnabled ? 'checked' : ''} /> Voz das vítimas ativa</label>
             <label><input id="cfg-sfx-enabled" type="checkbox" ${cfg.sfxEnabled ? 'checked' : ''} /> Efeitos sonoros Win11</label>
           </div>
@@ -321,52 +414,42 @@ export class ConfigUi {
       return;
     }
 
-    // Default tab: AI Providers
-    const meta = AI_PROVIDERS[cfg.provider] || AI_PROVIDERS.offline;
+    // Default tab: AI Providers + Smart Model Picker
+    const meta = AI_PROVIDERS[cfg.provider] || AI_PROVIDERS.gemini;
     const activeKey = getActiveApiKey(cfg);
+    const ready = isAiReady(cfg);
     const providerOpts = Object.entries(AI_PROVIDERS)
-      .map(
-        ([key, val]) => {
-          const hasSavedKey = Boolean(cfg.keysByProvider?.[key]);
-          const suffix = hasSavedKey ? ' [Chave salva]' : '';
-          return `<option value="${key}" ${cfg.provider === key ? 'selected' : ''}>${escapeHtml(val.label + suffix)}</option>`;
-        }
-      )
-      .join('');
-
-    const presetChips = (meta.presets || [])
-      .map(
-        (m) => `<button type="button" class="win-btn win-btn-mini ${cfg.model === m ? 'win-btn-primary' : ''}" data-model-preset="${escapeHtml(m)}">${escapeHtml(m)}</button>`
-      )
+      .map(([key, val]) => {
+        const hasSavedKey = Boolean(cfg.keysByProvider?.[key]);
+        const suffix = hasSavedKey ? ' [Chave salva]' : '';
+        return `<option value="${key}" ${cfg.provider === key ? 'selected' : ''}>${escapeHtml(val.label + suffix)}</option>`;
+      })
       .join('');
 
     const statusClass = this.testOk === true ? 'is-ok' : this.testOk === false ? 'is-bad' : '';
-    const statusText = this.testStatus || `Motor ativo: ${meta.label}`;
+    const statusText =
+      this.testStatus ||
+      (ready
+        ? `Pronto: ${meta.label} (${cfg.model})`
+        : `Ação necessária: cole sua API Key de ${meta.label} abaixo para habilitar as ligações.`);
 
     this.el.innerHTML = `
       ${tabs}
       <form id="ai-config-form" class="cfg-form">
-        <div class="cfg-notice">
-          Cofre local: cada provedor guarda sua própria API Key exclusivamente no <strong>localStorage</strong> do seu navegador.
+        <div class="cfg-notice ${ready ? '' : 'is-warn'}">
+          ${ready ? 'Chave salva apenas no <strong>localStorage</strong> deste navegador.' : 'O jogo exige uma IA real para as vítimas responderem e caírem na sua lábia.'}
         </div>
 
         <label class="cfg-field">
-          <span>Provedor de Inteligência Artificial</span>
+          <span>Provedor de IA</span>
           <select id="cfg-provider" class="win-input">${providerOpts}</select>
         </label>
 
         <label class="cfg-field">
-          <span>Modelo (clique num preset ou digite)</span>
-          <input id="cfg-model" type="text" class="win-input" value="${escapeHtml(cfg.model || meta.defaultModel)}" ${cfg.provider === 'offline' ? 'disabled' : ''} />
-        </label>
-
-        <div class="preset-row">${presetChips}</div>
-
-        <label class="cfg-field">
           <span>API Key de ${escapeHtml(meta.label)}</span>
           <input id="cfg-apikey" type="password" class="win-input" autocomplete="off"
-            placeholder="${meta.needsKey ? 'Cole sua chave aqui...' : 'Opcional / Não necessária'}"
-            value="${escapeHtml(activeKey)}" ${cfg.provider === 'offline' ? 'disabled' : ''} />
+            placeholder="${meta.needsKey ? 'Cole sua chave aqui (AIza... / sk-or-... / gsk_... / sk-...)' : 'Opcional para endpoint local'}"
+            value="${escapeHtml(activeKey)}" />
         </label>
 
         ${
@@ -378,9 +461,42 @@ export class ConfigUi {
             : ''
         }
 
+        <div class="model-picker-header">
+          <span>Seletor Inteligente de Modelos</span>
+          <div class="model-picker-actions">
+            <button type="button" class="win-btn win-btn-mini" data-cfg-action="fetch-models" ${this.isFetchingModels ? 'disabled' : ''}>
+              ${this.isFetchingModels ? 'Buscando...' : 'Buscar Modelos da API'}
+            </button>
+            <button type="button" class="win-btn win-btn-mini win-btn-primary" data-cfg-action="auto-pick">
+              Auto-Escolher Melhor
+            </button>
+          </div>
+        </div>
+
+        <div class="model-filter-bar">
+          <input id="cfg-model-search" type="text" class="win-input" placeholder="Filtrar modelos (ex.: flash, free, llama, gpt)..." value="${escapeHtml(this.modelSearch)}" />
+          <div class="filter-chips">
+            <button type="button" class="win-btn win-btn-mini ${this.modelFilter === 'all' ? 'win-btn-primary' : ''}" data-model-filter="all">Todos</button>
+            <button type="button" class="win-btn win-btn-mini ${this.modelFilter === 'recommended' ? 'win-btn-primary' : ''}" data-model-filter="recommended">Recomendados</button>
+            <button type="button" class="win-btn win-btn-mini ${this.modelFilter === 'free' ? 'win-btn-primary' : ''}" data-model-filter="free">Grátis</button>
+            <button type="button" class="win-btn win-btn-mini ${this.modelFilter === 'fast' ? 'win-btn-primary' : ''}" data-model-filter="fast">Rápidos</button>
+          </div>
+        </div>
+
+        ${this.modelFetchNotice ? `<div class="muted-note">${escapeHtml(this.modelFetchNotice)}</div>` : ''}
+
+        <div id="cfg-model-picker-list" class="model-picker-list">
+          ${this.buildModelRowsHtml()}
+        </div>
+
+        <label class="cfg-field">
+          <span>ID do Modelo Selecionado (editável)</span>
+          <input id="cfg-model" type="text" class="win-input" value="${escapeHtml(cfg.model || meta.defaultModel)}" />
+        </label>
+
         <div class="cfg-actions">
-          <button type="submit" class="win-btn win-btn-primary">Salvar Localmente</button>
-          <button type="button" class="win-btn" data-cfg-action="test">Testar Conexão</button>
+          <button type="submit" class="win-btn win-btn-primary">Salvar &amp; Testar Conexão</button>
+          <button type="button" class="win-btn" data-cfg-action="test">Só Testar</button>
           <button type="button" class="win-btn win-btn-danger" data-cfg-action="clear-key">Limpar Chave</button>
           <button type="button" class="win-btn" data-cfg-action="reset-save">Resetar Save</button>
         </div>

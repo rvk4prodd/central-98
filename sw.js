@@ -1,4 +1,6 @@
-const CACHE_NAME = 'central11-shell-v5';
+const CACHE_NAME = 'central11-shell-v6';
+const IS_LOCAL = self.location.hostname === '127.0.0.1' || self.location.hostname === 'localhost';
+
 const SHELL_ASSETS = [
   './',
   './index.html',
@@ -20,6 +22,10 @@ const SHELL_ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
+  if (IS_LOCAL) {
+    self.skipWaiting();
+    return;
+  }
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS))
   );
@@ -27,6 +33,20 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
+  if (IS_LOCAL) {
+    event.waitUntil(
+      caches
+        .keys()
+        .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+        .then(() => self.registration.unregister())
+        .then(() => self.clients.matchAll({ type: 'window' }))
+        .then((clients) => {
+          clients.forEach((client) => client.navigate(client.url));
+        })
+    );
+    return;
+  }
+
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
@@ -40,6 +60,8 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  if (IS_LOCAL) return;
+
   const { request } = event;
   if (request.method !== 'GET') return;
 

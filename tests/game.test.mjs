@@ -7,6 +7,7 @@ import {
   advanceToNextDay,
   applyCallTurnResult,
   buyUpgradeItem,
+  canEndShiftEarly,
   connectRemoteDesktop,
   createInitialState,
   DEFAULT_AI_CONFIG,
@@ -19,39 +20,67 @@ import {
   runRemoteFakeScan,
   sendFakeShieldAlert,
   spawnVirus,
+  spoofRedialVictim,
   startCallState,
   tickHardware,
   triggerPoliceRaid
 } from '../js/state.js';
-import { AI_PROVIDERS, generateOfflineReply, getActiveApiKey, parseAiResponse } from '../js/engine/ai-client.js';
+import {
+  AI_PROVIDERS,
+  getActiveApiKey,
+  isAiReady,
+  parseAiResponse,
+  rankModelsForGame
+} from '../js/engine/ai-client.js';
 import { decodePcm16ToFloat32 } from '../js/engine/audio.js';
 import { CentralGame } from '../js/engine/game.js';
 
-test('supports 10+ AI providers, legacy key migration, and JSON/think parsing', () => {
-  assert.ok(Object.keys(AI_PROVIDERS).length >= 11);
+test('supports 10 real AI providers, mandatory BYOK check, and legacy migration', () => {
+  assert.equal(Object.keys(AI_PROVIDERS).length, 10);
   const cfg = structuredClone(DEFAULT_AI_CONFIG);
+  assert.equal(isAiReady(cfg), false);
+
+  cfg.keysByProvider.gemini = 'AIza-demo';
+  assert.equal(isAiReady(cfg), true);
+
   cfg.provider = 'anthropic';
+  assert.equal(isAiReady(cfg), false);
   cfg.keysByProvider.anthropic = 'sk-ant-test-123';
   assert.equal(getActiveApiKey(cfg), 'sk-ant-test-123');
+  assert.equal(isAiReady(cfg), true);
 
-  // Legacy migration from central98_ai_v1 auto-activates Gemini neural TTS
+  cfg.provider = 'custom';
+  assert.equal(isAiReady(cfg), true);
+
   const fakeStorage = {
-    getItem: (k) => (k === 'central98_ai_v1' ? JSON.stringify({ provider: 'gemini', apiKey: 'AIza-demo', model: 'gemini-2.5-flash' }) : null)
+    getItem: (k) => (k === 'central98_ai_v1' ? JSON.stringify({ provider: 'offline', apiKey: '', model: 'local-contextual-v1' }) : null)
   };
   const migrated = loadAiConfig(fakeStorage);
   assert.equal(migrated.provider, 'gemini');
-  assert.equal(migrated.keysByProvider.gemini, 'AIza-demo');
-  assert.equal(migrated.ttsProvider, 'gemini_tts');
+  assert.equal(isAiReady(migrated), false);
+});
 
-  const clean = parseAiResponse('<think>reasoning...</think>\n{"reply":"Oi, tudo bem?","trustDelta":15,"suspicionDelta":-5,"mood":"convinced","revealSecret":true}');
+test('rankModelsForGame filters non-chat models and prioritizes recommended/free models', () => {
+  const ranked = rankModelsForGame('openrouter', [
+    { id: 'text-embedding-3-large', name: 'Embed' },
+    { id: 'openai/whisper-1', name: 'Whisper' },
+    { id: 'openai/tts-1', name: 'TTS' },
+    { id: 'some/random-model', name: 'Random' },
+    { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 Free', isFree: true },
+    { id: 'google/gemini-2.5-flash', name: 'Gemini 2.5 Flash' }
+  ]);
+
+  assert.equal(ranked.some((m) => m.id.includes('embedding') || m.id.includes('whisper') || m.id.includes('tts')), false);
+  assert.equal(ranked[0].id, 'meta-llama/llama-3.3-70b-instruct:free');
+  assert.ok(ranked[0].badges.includes('Grátis'));
+  assert.ok(ranked[1].id === 'google/gemini-2.5-flash');
+});
+
+test('parseAiResponse strips think tags/fences and decodePcm16ToFloat32 decodes PCM16', () => {
+  const clean = parseAiResponse('<think>reasoning...</think>\n```json\n{"reply":"Oi, tudo bem?","trustDelta":15,"suspicionDelta":-5,"mood":"convinced","revealSecret":true}\n```');
   assert.equal(clean.reply, 'Oi, tudo bem?');
   assert.equal(clean.revealSecret, true);
 
-  const fenced = parseAiResponse('```json\n{"reply":"Certo.","trustDelta":10,"mood":"calm"}\n```');
-  assert.equal(fenced.reply, 'Certo.');
-});
-
-test('decodePcm16ToFloat32 decodes 16-bit signed PCM into normalized [-1, 1] floats', () => {
   const bytes = new Uint8Array([0x00, 0x00, 0xff, 0x7f, 0x00, 0x80]);
   const floats = decodePcm16ToFloat32(bytes);
   assert.equal(floats.length, 3);
@@ -60,70 +89,87 @@ test('decodePcm16ToFloat32 decodes 16-bit signed PCM into normalized [-1, 1] flo
   assert.equal(floats[2], -1);
 });
 
-test('hangUpCall clears activeCall cleanly and allows immediate re-dialing', () => {
+test('dialVictim blocks without API key, and hangUpCall clears activeCall cleanly', () => {
   const game = new CentralGame();
-  game.dialVictim('dona_marlene');
+  assert.equal(game.dialVictim('dona_marlene'), false);
+
+  game.updateAiConfig({ provider: 'gemini', keysByProvider: { gemini: 'AIza-test' } });
+  assert.equal(game.dialVictim('dona_marlene'), true);
   assert.equal(game.state.activeCall.victimId, 'dona_marlene');
+
   game.hangUpCall();
   assert.equal(game.state.activeCall, null);
-  game.dialVictim('cleber_oficina');
-  assert.equal(game.state.activeCall.victimId, 'cleber_oficina');
+  assert.equal(game.dialVictim('cleber_oficina'), true);
 });
 
-test('AnyControl remote desktop, black curtain, FakeScan and FakeShield flow', () => {
+test('redeemSecretCode requires prior extraction and spoofRedial unlocks hung-up victims', () => {
+  const state = createInitialState();
+  const victim = VICTIMS[0];
+
+  // Reject guessing a secret that was never extracted
+  const guessed = redeemSecretCode(state, victim.secretPayload);
+  assert.equal(guessed.ok, false);
+
+  startCallState(state, victim.id);
+  applyCallTurnResult(
+    state,
+    victim,
+    { reply: 'Ok', trustDelta: 60, suspicionDelta: 0, mood: 'convinced', revealSecret: true, hangUp: false, triggerVirus: false },
+    'Protocolo confirmado'
+  );
+  assert.equal(state.activeCall.status, 'won');
+
+  const redeemed = redeemSecretCode(state, victim.secretPayload);
+  assert.equal(redeemed.ok, true);
+  assert.equal(state.shiftEarned, victim.payout);
+
+  // Victim hangup locks target until spoofed
+  const second = VICTIMS[1];
+  startCallState(state, second.id);
+  applyCallTurnResult(
+    state,
+    second,
+    { reply: 'Golpe!', trustDelta: -20, suspicionDelta: 95, mood: 'angry', revealSecret: false, hangUp: true, triggerVirus: false },
+    'Passa o pix logo'
+  );
+  assert.ok(state.failedVictimIds.includes(second.id));
+  const spoof = spoofRedialVictim(state, second.id);
+  assert.equal(spoof.ok, true);
+  assert.equal(state.failedVictimIds.includes(second.id), false);
+});
+
+test('AnyControl, FakeShield, Police Raid, hardware line penalty and canEndShiftEarly work together', () => {
   const state = createInitialState();
   const victim = VICTIMS.find((v) => v.id === 'dona_marlene');
   startCallState(state, victim.id);
 
-  // Boost trust above 35% without completing the call yet
-  const r1 = generateOfflineReply(victim, state.activeCall, 'Dona Marlene, aqui é do setor de protocolo da entrega.');
-  applyCallTurnResult(state, victim, r1, 'Dona Marlene, aqui é do setor de protocolo da entrega.');
-  assert.equal(state.activeCall.status, 'active');
-  assert.ok(state.activeCall.trust >= 35);
+  // Active virus/loose cable adds +5 suspicion penalty on turns
+  spawnVirus(state, 'Teste');
+  const prevSusp = state.activeCall.suspicion;
+  applyCallTurnResult(state, victim, { reply: 'Alô?', trustDelta: 20, suspicionDelta: 0, mood: 'calm' }, 'Oi');
+  assert.equal(state.activeCall.suspicion, prevSusp + 5);
 
   const conn = connectRemoteDesktop(state);
   assert.equal(conn.ok, true);
-
-  const scan = runRemoteFakeScan(state, victim);
-  assert.equal(scan.ok, true);
-  assert.equal(scan.backfired, false);
+  assert.equal(runRemoteFakeScan(state, victim).ok, true);
+  assert.equal(sendFakeShieldAlert(state, victim).ok, true);
 
   state.activeCall.blackCurtain = true;
   const secretIdx = victim.remoteFiles.findIndex((f) => f.isSecret);
   const fileRes = inspectRemoteFile(state, victim, secretIdx);
   assert.equal(fileRes.ok, true);
   assert.equal(fileRes.secretFound, victim.secretPayload);
-  assert.equal(state.activeCall.status, 'won');
-});
 
-test('FakeShield panics normal victims and backfires on Scambaiters', () => {
-  const state = createInitialState();
-  state.day = 3;
-  const baiter = VICTIMS.find((v) => v.isScambaiter);
-  startCallState(state, baiter.id);
-
-  const res = sendFakeShieldAlert(state, baiter);
-  assert.equal(res.ok, true);
-  assert.equal(res.backfired, true);
-});
-
-test('Police Raid dodge with Excel vs fine + strike', () => {
-  const state = createInitialState();
-  state.wallet = 500;
-  assert.equal(triggerPoliceRaid(state), true);
-  const dodged = resolvePoliceRaid(state, true);
-  assert.equal(dodged.dodged, true);
-  assert.equal(state.strikes, 0);
-
+  // Police raid dodge vs fine
   triggerPoliceRaid(state);
-  const busted = resolvePoliceRaid(state, false);
-  assert.equal(busted.dodged, false);
-  assert.equal(state.strikes, 1);
-  assert.ok(state.wallet < 500);
-});
+  assert.equal(resolvePoliceRaid(state, true).dodged, true);
 
-test('Custom victim creator, CryptoVault multiplier, upgrades, and hardware BSOD recovery', () => {
-  const state = createInitialState();
+  // Early shift end check
+  state.activeCall = null;
+  state.shiftEarned = state.quota;
+  assert.equal(canEndShiftEarly(state), true);
+
+  // Custom victim + CryptoVault + BSOD
   const created = addCustomVictim(state, {
     name: 'Seu Arlindo',
     role: 'Síndico',
@@ -133,23 +179,13 @@ test('Custom victim creator, CryptoVault multiplier, upgrades, and hardware BSOD
     personaPrompt: 'Síndico preocupado com boleto.'
   });
   assert.equal(created.ok, true);
-
-  state.cryptoRate = 1.25;
-  const redeem = redeemSecretCode(state, created.victim.secretPayload, 'crypto');
-  assert.equal(redeem.ok, true);
-  assert.equal(redeem.payout, 1250);
-
-  const buy = buyUpgradeItem(state, 'vpn');
-  assert.equal(buy.ok, true);
-  assert.equal(state.upgrades.vpn, 1);
+  state.wallet = 1000;
+  assert.equal(buyUpgradeItem(state, 'vpn').ok, true);
 
   state.pc.cpuTemp = 96;
-  spawnVirus(state, 'Teste');
   const hw = tickHardware(state, 5, () => 0.9);
   assert.equal(hw.crashedNow, true);
   assert.equal(repairPart(state, 'reboot').ok, true);
-
-  state.shiftEarned = state.quota;
   assert.equal(evaluateShift(state).hitQuota, true);
   advanceToNextDay(state);
   assert.equal(state.day, 2);

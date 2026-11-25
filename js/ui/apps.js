@@ -1,5 +1,5 @@
 import { UPGRADES, getUpgradePrice } from '../data/upgrades.js';
-import { getAvailableVictims } from '../state.js';
+import { canEndShiftEarly, getAvailableVictims } from '../state.js';
 import { AI_PROVIDERS } from '../engine/ai-client.js';
 import { soundEngine } from '../engine/audio.js';
 import { drawBossPortrait, drawVictimPortrait } from '../engine/sprites.js';
@@ -27,7 +27,7 @@ export class AppRenderer {
     this.micActive = false;
     this.activeRec = null;
     this.showCustomForm = false;
-    this.scamazonTab = 'giftcard'; // 'giftcard' | 'bank' | 'crypto'
+    this.scamazonTab = 'giftcard';
 
     this.els = {
       phoneBody: document.getElementById('phone-body'),
@@ -45,6 +45,7 @@ export class AppRenderer {
       hudHeat: document.getElementById('hud-heat'),
       hudTemp: document.getElementById('hud-temp'),
       hudStrikes: document.getElementById('hud-strikes'),
+      endShiftBtn: document.getElementById('end-shift-btn'),
       opBadge: document.getElementById('operator-status-badge'),
       toastBar: document.getElementById('toast-bar'),
       raidBanner: document.getElementById('police-raid-banner'),
@@ -60,14 +61,17 @@ export class AppRenderer {
   }
 
   bindDelegatedEvents() {
-    // PhoneLink VoIP events
     this.els.phoneBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');
       if (!btn) return;
       const action = btn.dataset.action;
 
-      if (action === 'dial') {
+      if (action === 'open-config') {
+        this.winMgr.openOrFocus('win-config');
+      } else if (action === 'dial') {
         this.game.dialVictim(btn.dataset.victimId);
+      } else if (action === 'spoof') {
+        this.game.spoofRedial(btn.dataset.victimId);
       } else if (action === 'toggle-custom-form') {
         this.showCustomForm = !this.showCustomForm;
         this.renderPhone('update');
@@ -77,6 +81,8 @@ export class AppRenderer {
         this.game.toggleHold();
       } else if (action === 'replay') {
         this.game.replayLastVictimAudio();
+      } else if (action === 'retry-msg') {
+        this.game.retryLastMessage();
       } else if (action === 'hint') {
         const input = document.getElementById('call-msg-input');
         if (input) {
@@ -128,7 +134,6 @@ export class AppRenderer {
       }
     });
 
-    // AnyControl Remote Desktop events
     this.els.remoteBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-remote-action]');
       if (!btn) return;
@@ -139,7 +144,6 @@ export class AppRenderer {
       else if (act === 'open-file') this.game.openRemoteFile(Number(btn.dataset.fileIdx));
     });
 
-    // GeoTrace events
     this.els.traceBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');
       if (!btn) return;
@@ -156,7 +160,6 @@ export class AppRenderer {
       }
     });
 
-    // Scamazon & CryptoVault events
     this.els.scamazonBody.addEventListener('click', (e) => {
       const tabBtn = e.target.closest('button[data-scam-tab]');
       if (tabBtn) {
@@ -177,25 +180,25 @@ export class AppRenderer {
       if (res.ok) input.value = '';
     });
 
-    // FakeShield AV events
     this.els.fakeshieldBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action="send-fakeshield"]');
       if (btn) this.game.deployFakeShield();
     });
 
-    // PC Doctor events
     this.els.doctorBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-repair]');
       if (btn) this.game.repairPc(btn.dataset.repair);
     });
 
-    // Virus popups
     this.els.virusLayer.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-close-virus]');
       if (btn) this.game.closeVirusPopup(btn.dataset.closeVirus);
     });
 
-    // Panic Excel / Raid controls
+    this.els.endShiftBtn?.addEventListener('click', () => {
+      this.game.endShiftEarly();
+    });
+
     document.getElementById('panic-excel-btn')?.addEventListener('click', () => {
       this.game.togglePanicExcel();
     });
@@ -206,12 +209,10 @@ export class AppRenderer {
       if (this.game.state.panicExcelMode) this.game.togglePanicExcel();
     });
 
-    // BSOD reboot button
     document.getElementById('bsod-reboot-btn')?.addEventListener('click', () => {
       this.game.repairPc('reboot');
     });
 
-    // Shift modal next day
     this.els.shiftModalBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action="next-day"]');
       if (btn) this.game.nextDay();
@@ -244,6 +245,11 @@ export class AppRenderer {
   }
 
   renderAll(eventType = 'update') {
+    if (eventType === 'open-config') {
+      this.winMgr.openOrFocus('win-config');
+      return;
+    }
+
     if (eventType === 'toast') {
       if (this.game.lastToast) {
         this.els.toastBar.textContent = this.game.lastToast;
@@ -276,6 +282,7 @@ export class AppRenderer {
     if (eventType === 'tick') {
       this.renderHud();
       this.updateLiveMetersInPlace();
+      this.syncTaskbarBadges();
       const s = this.game.state;
       if (s.policeRaid && !s.panicExcelMode) {
         this.els.raidBanner.classList.remove('is-hidden');
@@ -285,6 +292,7 @@ export class AppRenderer {
     }
 
     this.renderHud();
+    this.syncTaskbarBadges();
     this.renderPhone(eventType);
     this.renderRemote();
     this.renderTrace();
@@ -296,6 +304,17 @@ export class AppRenderer {
     }
     this.renderViruses();
     this.renderOverlays();
+  }
+
+  syncTaskbarBadges() {
+    const s = this.game.state;
+    const unredeemed = s.extractedSecrets.some((code) => !s.redeemedCodes.includes(code));
+    const pcProblem = s.pc.cpuTemp >= 78 || s.pc.activeViruses.length > 0 || s.pc.looseCable || s.pc.burntCap;
+    this.winMgr.setBadges({
+      'win-config': this.game.isAiConfigured() ? '' : 'warn',
+      'win-doctor': pcProblem ? 'danger' : '',
+      'win-scamazon': unredeemed ? 'ok' : ''
+    });
   }
 
   updateLiveMetersInPlace() {
@@ -343,20 +362,22 @@ export class AppRenderer {
 
   renderHud() {
     const s = this.game.state;
+    const aiReady = this.game.isAiConfigured();
     this.els.hudDay.textContent = `DIA ${s.day}`;
     this.els.hudQuota.textContent = `META R$ ${s.shiftEarned}/${s.quota}`;
     this.els.hudQuota.classList.toggle('is-ok', s.shiftEarned >= s.quota);
     this.els.hudWallet.textContent = `CAIXA R$ ${s.wallet}`;
-    this.els.hudTimer.textContent = formatTime(s.shiftTimeLeft);
+    this.els.hudTimer.textContent = aiReady ? formatTime(s.shiftTimeLeft) : `${formatTime(s.shiftTimeLeft)} (PAUSA)`;
     this.els.hudHeat.textContent = `POLÍCIA ${Math.round(s.policeHeat)}%`;
     this.els.hudHeat.classList.toggle('is-danger', s.policeHeat >= 65);
     this.els.hudTemp.textContent = `CPU ${Math.round(s.pc.cpuTemp)}°C`;
     this.els.hudTemp.classList.toggle('is-danger', s.pc.cpuTemp >= 80);
     this.els.hudStrikes.textContent = `AVISOS ${s.strikes}/${s.maxStrikes}`;
+    this.els.endShiftBtn?.classList.toggle('is-hidden', !canEndShiftEarly(s));
 
     const modeLabels = {
-      idle: 'EM LINHA',
-      typing: 'DIGITANDO...',
+      idle: aiReady ? 'EM LINHA' : 'CONFIG IA!',
+      typing: 'IA PENSANDO...',
       talking: 'VOZ ATIVA',
       sweating: 'PRESSÃO!',
       celebrating: 'GOLPE FEITO!',
@@ -374,25 +395,31 @@ export class AppRenderer {
     const s = this.game.state;
     const call = s.activeCall;
     const victim = this.game.getActiveVictim();
+    const aiReady = this.game.isAiConfigured();
 
     const existingInput = document.getElementById('call-msg-input');
     const draftValue = existingInput ? existingInput.value : '';
     const hadFocus = existingInput && document.activeElement === existingInput;
 
-    if (eventType === 'tick' && call && call.status === 'active') {
-      const patienceFill = document.getElementById('meter-patience-fill');
-      const patienceText = document.getElementById('meter-patience-text');
-      if (patienceFill && patienceText) {
-        const pct = Math.round((call.patience / call.maxPatience) * 100);
-        patienceFill.style.width = `${pct}%`;
-        patienceText.textContent = `${call.patience}s`;
-        return;
-      }
-    }
-
     if (!call || !victim) {
       if (eventType === 'tick' && this.showCustomForm) return;
       const targets = getAvailableVictims(s);
+      const activeProvider = AI_PROVIDERS[this.game.aiConfig.provider];
+
+      const aiGateHtml = !aiReady
+        ? `
+          <div class="ai-gate-card">
+            <div>
+              <strong>Conecte uma IA para jogar</strong>
+              <p class="muted-note">O turno está pausado. Escolha um provedor (Gemini, OpenRouter com modelos grátis, Groq, OpenAI, Claude ou Ollama) e salve sua API Key local.</p>
+            </div>
+            <button type="button" class="win-btn win-btn-primary" data-action="open-config">
+              Configurar API Key &amp; Modelos
+            </button>
+          </div>
+        `
+        : '';
+
       const customBox = this.showCustomForm
         ? `
           <form id="custom-victim-form" class="custom-victim-box">
@@ -424,21 +451,27 @@ export class AppRenderer {
       const rows = targets
         .map((v) => {
           const done = s.completedIds.includes(v.id);
+          const blocked = !done && s.failedVictimIds.includes(v.id);
+          const actionBtn = done
+            ? '<button type="button" class="win-btn" disabled>Concluído</button>'
+            : blocked
+              ? `<button type="button" class="win-btn win-btn-danger" data-action="spoof" data-victim-id="${v.id}">Spoof R$ 60</button>`
+              : `<button type="button" class="win-btn win-btn-primary" data-action="dial" data-victim-id="${v.id}" ${!aiReady ? 'disabled' : ''}>Ligar</button>`;
+
           return `
-            <div class="target-card ${done ? 'is-done' : ''}">
+            <div class="target-card ${done ? 'is-done' : ''} ${blocked ? 'is-blocked' : ''}">
               <div class="target-info">
                 <div class="target-name">
                   ${escapeHtml(v.name)}
                   ${v.isCustom ? '<span class="tag tag-accent">CUSTOM</span>' : ''}
                   ${v.isScambaiter ? '<span class="tag tag-warn">SCAMBAITER</span>' : ''}
                   ${done ? '<span class="tag tag-ok">EXTRAÍDO</span>' : ''}
+                  ${blocked ? '<span class="tag tag-warn">BLOQUEOU VOCÊ</span>' : ''}
                 </div>
                 <div class="target-meta">${escapeHtml(v.role)} — ${escapeHtml(v.company)}</div>
                 <div class="target-goal">Alvo: <strong>${escapeHtml(v.goalLabel)}</strong> • Prêmio: <strong>R$ ${v.payout}</strong></div>
               </div>
-              <button type="button" class="win-btn win-btn-primary" data-action="dial" data-victim-id="${v.id}">
-                Ligar
-              </button>
+              ${actionBtn}
             </div>
           `;
         })
@@ -448,12 +481,15 @@ export class AppRenderer {
         <div class="app-banner">
           <span>Discador Dia ${s.day} (${targets.length} alvos)</span>
           <div class="banner-right">
-            <span class="badge-provider">${escapeHtml(AI_PROVIDERS[this.game.aiConfig.provider]?.label || 'Local')}</span>
+            <button type="button" class="win-btn win-btn-mini" data-action="open-config">
+              ${escapeHtml(activeProvider?.label?.split(' ')[0] || 'IA')} · ${escapeHtml(this.game.aiConfig.model)}
+            </button>
             <button type="button" class="win-btn win-btn-mini" data-action="toggle-custom-form">
               ${this.showCustomForm ? 'Fechar Criador' : '+ Criar Alvo'}
             </button>
           </div>
         </div>
+        ${aiGateHtml}
         ${customBox}
         <div class="target-list">${rows}</div>
       `;
@@ -495,6 +531,22 @@ export class AppRenderer {
       `
       : '';
 
+    const errorBox = call.lastError
+      ? `
+        <div class="ai-error-banner">
+          <div><strong>Falha na IA:</strong> ${escapeHtml(call.lastError)}</div>
+          <div class="ai-error-actions">
+            ${call.lastPendingText ? '<button type="button" class="win-btn win-btn-mini win-btn-primary" data-action="retry-msg">Tentar Novamente</button>' : ''}
+            <button type="button" class="win-btn win-btn-mini" data-action="open-config">Trocar Modelo / API</button>
+          </div>
+        </div>
+      `
+      : '';
+
+    const step1Done = call.trust >= 35;
+    const step2Done = Boolean(call.remoteConnected || call.fakeShieldSent || call.revealedFacts.length >= 2);
+    const step3Done = Boolean(call.extractedSecret);
+
     this.els.phoneBody.innerHTML = `
       <div class="call-header">
         <canvas id="victim-portrait-canvas" width="48" height="48" class="pixel-canvas victim-portrait"></canvas>
@@ -503,7 +555,7 @@ export class AppRenderer {
           <div class="call-goal">${escapeHtml(victim.goalLabel)} • R$ ${victim.payout} ${call.lastSource ? `<span class="tag">${escapeHtml(call.lastSource)}</span>` : ''}</div>
           <div class="voice-wave ${this.game.isSpeaking ? 'is-active' : ''}">
             <span></span><span></span><span></span><span></span><span></span>
-            <small id="voice-status-text">${this.game.isSpeaking ? 'Falando na linha...' : call.onHold ? 'Em espera' : 'Linha conectada'}</small>
+            <small id="voice-status-text">${this.game.isSending ? 'IA respondendo...' : this.game.isSpeaking ? 'Falando na linha...' : call.onHold ? 'Em espera' : 'Linha conectada'}</small>
           </div>
         </div>
         <div class="call-actions-top">
@@ -511,6 +563,12 @@ export class AppRenderer {
           <button type="button" class="win-btn ${call.onHold ? 'is-pressed' : ''}" data-action="hold">${call.onHold ? 'Retomar' : 'Espera'}</button>
           <button type="button" class="win-btn win-btn-danger" data-action="hangup">${call.status === 'active' ? 'Desligar' : 'Voltar ao Discador'}</button>
         </div>
+      </div>
+
+      <div class="strategy-steps">
+        <span class="step-chip ${step1Done ? 'is-done' : ''}">1. Confiança ≥35%</span>
+        <span class="step-chip ${step2Done ? 'is-done' : ''}">2. GeoTrace / AnyControl</span>
+        <span class="step-chip ${step3Done ? 'is-done' : ''}">3. Extrair &amp; Resgatar</span>
       </div>
 
       <div class="meters-grid">
@@ -531,6 +589,7 @@ export class AppRenderer {
         </div>
       </div>
 
+      ${errorBox}
       ${secretBox}
 
       <div class="chat-log" id="call-chat-log">${messagesHtml}</div>
@@ -543,7 +602,7 @@ export class AppRenderer {
 
       <form id="call-chat-form" class="chat-form">
         <input id="call-msg-input" type="text" class="win-input" autocomplete="off"
-          placeholder="${call.status === 'active' ? 'Fale no mic ou digite sua lábia...' : 'Ligação encerrada — clique em Voltar'}"
+          placeholder="${call.status === 'active' ? 'Fale no mic ou digite sua lábia...' : 'Ligação encerrada — clique em Voltar ao Discador'}"
           ${call.status !== 'active' ? 'disabled' : ''} />
         <button type="button" class="win-btn ${this.micActive ? 'win-btn-danger' : ''}" data-action="mic" ${call.status !== 'active' ? 'disabled' : ''}>
           ${this.micActive ? 'Parar' : 'Mic'}
@@ -717,6 +776,11 @@ export class AppRenderer {
       crypto: `CryptoVault BTC/MemeCoin (cotação ao vivo: ${s.cryptoRate.toFixed(2)}x)`
     };
 
+    const unredeemedPills = s.extractedSecrets
+      .filter((code) => !s.redeemedCodes.includes(code))
+      .map((code) => `<span class="tag tag-ok">${escapeHtml(code)}</span>`)
+      .join(' ');
+
     const upgradesHtml = UPGRADES.map((u) => {
       const lvl = s.upgrades[u.id] || 0;
       const maxed = lvl >= u.maxLevel;
@@ -744,12 +808,13 @@ export class AppRenderer {
       </div>
       <form id="redeem-form" class="redeem-box">
         <div class="redeem-title">${escapeHtml(channelInfo[this.scamazonTab])}</div>
+        ${unredeemedPills ? `<div class="muted-note" style="margin-bottom:6px;">Prontos p/ resgatar: ${unredeemedPills}</div>` : ''}
         <div class="redeem-row">
           <input id="redeem-code-input" type="text" class="win-input" placeholder="Cole código / senha / PIX extraído..." value="${escapeHtml(draftCode)}" />
           <button type="submit" class="win-btn win-btn-cash">Resgatar</button>
         </div>
       </form>
-      <div class="shop-header">Upgrades do Setup & Escritório (Caixa: <strong>R$ ${s.wallet}</strong>)</div>
+      <div class="shop-header">Upgrades do Setup &amp; Escritório (Caixa: <strong>R$ ${s.wallet}</strong>)</div>
       <div class="upgrade-list">${upgradesHtml}</div>
     `;
   }
@@ -779,7 +844,7 @@ export class AppRenderer {
 
       <div class="pc-interior">
         <div class="pc-part ${pc.dustLevel > 50 ? 'is-warn' : ''}">
-          <div><strong>Cooler & Dissipador</strong><br/><small>Poeira: ${Math.round(pc.dustLevel)}%</small></div>
+          <div><strong>Cooler &amp; Dissipador</strong><br/><small>Poeira: ${Math.round(pc.dustLevel)}%</small></div>
           <button type="button" class="win-btn win-btn-primary" data-repair="dust">Soprar Poeira</button>
         </div>
         <div class="pc-part ${pc.looseCable ? 'is-bad' : ''}">

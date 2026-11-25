@@ -23,18 +23,29 @@ function bootstrap() {
     winMgr.openOrFocus(btn.dataset.openWin);
   });
 
-  document.getElementById('start-btn')?.addEventListener('click', () => {
-    document.getElementById('start-menu')?.classList.toggle('is-hidden');
+  const startMenu = document.getElementById('start-menu');
+  const startBtn = document.getElementById('start-btn');
+
+  startBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    startMenu?.classList.toggle('is-hidden');
   });
 
-  document.getElementById('start-menu')?.addEventListener('click', (e) => {
+  startMenu?.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-open-win]');
     if (!btn) return;
     winMgr.openOrFocus(btn.dataset.openWin);
-    document.getElementById('start-menu')?.classList.add('is-hidden');
+    startMenu?.classList.add('is-hidden');
   });
 
-  // Refresh browser neural voices list when voices finish loading asynchronously
+  document.addEventListener('pointerdown', (e) => {
+    if (startMenu && !startMenu.classList.contains('is-hidden')) {
+      if (!startMenu.contains(e.target) && !startBtn?.contains(e.target)) {
+        startMenu.classList.add('is-hidden');
+      }
+    }
+  });
+
   if ('speechSynthesis' in window) {
     window.speechSynthesis.onvoiceschanged = () => {
       apps.configUi.render();
@@ -47,7 +58,7 @@ function bootstrap() {
   });
   setTimeout(() => {
     bootSplash?.classList.add('is-hidden');
-  }, 1000);
+  }, 850);
 
   game.subscribe((_, eventType) => {
     apps.renderAll(eventType);
@@ -55,6 +66,11 @@ function bootstrap() {
 
   apps.renderAll('update');
   game.startLoop();
+
+  // Open Config IA automatically on first visit when no API Key is set
+  if (!game.isAiConfigured()) {
+    winMgr.openOrFocus('win-config');
+  }
 
   let lastFrame = 0;
   function animateCanvases(ts) {

@@ -3,6 +3,7 @@ import {
   advanceToNextDay,
   applyCallTurnResult,
   buyUpgradeItem,
+  canEndShiftEarly,
   clamp,
   connectRemoteDesktop,
   createInitialState,
@@ -20,11 +21,19 @@ import {
   runRemoteFakeScan,
   sendFakeShieldAlert,
   spawnVirus,
+  spoofRedialVictim,
   startCallState,
   tickHardware,
   triggerPoliceRaid
 } from '../state.js';
-import { requestVictimReply, testProviderConnection } from './ai-client.js';
+import {
+  AI_PROVIDERS,
+  fetchProviderModels,
+  isAiReady,
+  rankModelsForGame,
+  requestVictimReply,
+  testProviderConnection
+} from './ai-client.js';
 import { soundEngine } from './audio.js';
 
 export class CentralGame {
@@ -45,6 +54,10 @@ export class CentralGame {
       this.syncOperatorMood();
       this.emit('speaking');
     });
+  }
+
+  isAiConfigured() {
+    return isAiReady(this.aiConfig);
   }
 
   subscribe(fn) {
@@ -79,6 +92,11 @@ export class CentralGame {
 
   onSecondTick() {
     if (this.state.gameOver || this.state.lastShiftReport) return;
+
+    // Pause shift clock & hardware heat while waiting for mandatory AI API Key setup
+    if (!this.isAiConfigured()) {
+      return;
+    }
 
     let structuralChange = false;
 
@@ -130,12 +148,15 @@ export class CentralGame {
 
       const call = this.state.activeCall;
       if (call && call.status === 'active') {
-        if (!call.onHold) {
+        if (!call.onHold && !this.isSending) {
           call.patience = Math.max(0, call.patience - 1);
           if (call.patience === 0) {
             structuralChange = true;
             const victim = this.getActiveVictim();
             call.status = 'lost';
+            if (victim && !this.state.failedVictimIds.includes(victim.id)) {
+              this.state.failedVictimIds.push(victim.id);
+            }
             call.messages.push({
               role: 'victim',
               text: 'Cansei de esperar, perdi a paciência. Tchau!',
@@ -204,9 +225,22 @@ export class CentralGame {
   }
 
   dialVictim(victimId) {
+    if (!this.isAiConfigured()) {
+      this.notify('Configure uma API Key ou endpoint local em Config IA para ligar!', true);
+      this.emit('open-config');
+      return false;
+    }
     if (this.state.pc.isCrashed) {
       this.notify('PC em Tela Azul! Reinicie no PC Doctor.', true);
-      return;
+      return false;
+    }
+    if (this.state.completedIds.includes(victimId)) {
+      this.notify('Você já concluiu esse alvo neste turno.', true);
+      return false;
+    }
+    if (this.state.failedVictimIds.includes(victimId)) {
+      this.notify('Este alvo bloqueou seu número! Use "Spoof R$ 60" para ligar de outro chip.', true);
+      return false;
     }
 
     soundEngine.stopSpeech();
@@ -217,7 +251,7 @@ export class CentralGame {
     const seq = this.callSessionSeq;
 
     const call = startCallState(this.state, victimId);
-    if (!call) return;
+    if (!call) return false;
 
     const victim = this.getActiveVictim();
     soundEngine.playDial();
@@ -231,6 +265,20 @@ export class CentralGame {
         this.speakWithNotification(victim.openingLine, victim.voiceProfile);
       }
     }, 450);
+    return true;
+  }
+
+  spoofRedial(victimId) {
+    const res = spoofRedialVictim(this.state, victimId);
+    if (!res.ok) {
+      this.notify(res.reason, true);
+      return res;
+    }
+    soundEngine.playRemoteConnect();
+    this.notify(`Número mascarado por R$ ${res.cost}! Agora você pode ligar novamente.`);
+    persistState(this.state);
+    this.emit();
+    return res;
   }
 
   hangUpCall() {
@@ -281,6 +329,7 @@ export class CentralGame {
     } else {
       soundEngine.playRemoteConnect();
       this.notify(res.message);
+      this.triggerAiToolReaction('O operador acabou de conectar no seu computador via AnyControl.');
     }
     this.emit();
     return res;
@@ -297,9 +346,14 @@ export class CentralGame {
 
   openRemoteFile(fileIdx) {
     const victim = this.getActiveVictim();
+    const call = this.state.activeCall;
+    const wasVisible = Boolean(call && !call.blackCurtain);
     const res = inspectRemoteFile(this.state, victim, fileIdx);
     if (!res.ok) {
       this.notify(res.reason, true);
+      if (wasVisible && call?.status === 'active') {
+        this.triggerAiToolReaction('Você viu o mouse do operador tentando abrir seu arquivo confidencial sem Tela Preta!');
+      }
     } else if (res.secretFound) {
       soundEngine.playCash();
       this.notify(`Arquivo secreto extraído via AnyControl: ${res.secretFound}!`);
@@ -320,6 +374,7 @@ export class CentralGame {
     } else {
       soundEngine.playFakeScan();
       this.notify(res.message, res.backfired);
+      this.triggerAiToolReaction('Um scanner de antivírus na sua tela acabou de mostrar 47 infecções críticas falsas!');
     }
     this.emit();
     return res;
@@ -333,9 +388,46 @@ export class CentralGame {
     } else {
       soundEngine.playFakeScan();
       this.notify(res.message, res.backfired);
+      this.triggerAiToolReaction('Um pop-up vermelho do FakeShield acabou de piscar na sua tela dizendo que seu banco está sendo invadido!');
     }
     this.emit();
     return res;
+  }
+
+  async triggerAiToolReaction(eventText) {
+    const call = this.state.activeCall;
+    const victim = this.getActiveVictim();
+    if (!call || !victim || call.status !== 'active' || this.isSending || !this.isAiConfigured()) return;
+
+    this.isSending = true;
+    const seq = this.callSessionSeq;
+    this.syncOperatorMood();
+    this.emit('sending');
+
+    const aiResult = await requestVictimReply(this.aiConfig, victim, call, '', eventText);
+    if (this.callSessionSeq !== seq || this.state.activeCall !== call) return;
+    this.isSending = false;
+
+    if (!aiResult.ok) {
+      this.emit('call-reply');
+      return;
+    }
+
+    call.lastSource = aiResult.source;
+    const { triggeredVirus } = applyCallTurnResult(this.state, victim, aiResult, '');
+    if (triggeredVirus) {
+      spawnVirus(this.state, victim.name);
+      soundEngine.playError();
+      this.notify(`ATAQUE DE SCAMBAITER! ${victim.name} disparou um pop-up de vírus!`, true);
+    }
+    this.syncOperatorMood();
+    persistState(this.state);
+    this.emit('call-reply');
+
+    const lastMsg = call.messages[call.messages.length - 1];
+    if (lastMsg && lastMsg.role === 'victim') {
+      this.speakWithNotification(lastMsg.text, victim.voiceProfile);
+    }
   }
 
   togglePanicExcel() {
@@ -378,6 +470,8 @@ export class CentralGame {
       soundEngine.toggleHoldMusic(false);
     }
 
+    call.lastError = null;
+    call.lastPendingText = text;
     this.isSending = true;
     const seq = this.callSessionSeq;
     this.syncOperatorMood();
@@ -388,7 +482,18 @@ export class CentralGame {
       return;
     }
     this.isSending = false;
-    call.lastSource = aiResult.source || this.aiConfig.provider;
+
+    if (!aiResult.ok) {
+      call.lastError = aiResult.error;
+      soundEngine.playError();
+      this.notify(`Erro na IA: ${aiResult.error}`, true);
+      this.syncOperatorMood();
+      this.emit('call-reply');
+      return;
+    }
+
+    call.lastPendingText = '';
+    call.lastSource = aiResult.source;
 
     const { triggeredVirus } = applyCallTurnResult(this.state, victim, aiResult, text);
 
@@ -405,10 +510,6 @@ export class CentralGame {
       this.notify(`${victim.name} desligou na sua cara!`, true);
     }
 
-    if (aiResult.warning) {
-      this.notify(`Fallback local (${aiResult.warning})`, true);
-    }
-
     this.syncOperatorMood();
     persistState(this.state);
     this.emit('call-reply');
@@ -417,6 +518,12 @@ export class CentralGame {
     if (lastMsg && lastMsg.role === 'victim') {
       this.speakWithNotification(lastMsg.text, victim.voiceProfile);
     }
+  }
+
+  async retryLastMessage() {
+    const call = this.state.activeCall;
+    if (!call || !call.lastPendingText) return;
+    await this.sendPlayerMessage(call.lastPendingText);
   }
 
   replayLastVictimAudio() {
@@ -478,6 +585,15 @@ export class CentralGame {
     }
   }
 
+  endShiftEarly() {
+    if (!canEndShiftEarly(this.state)) {
+      this.notify('Bata a meta e encerre a ligação/batida antes de bater o ponto.', true);
+      return false;
+    }
+    this.finishShift();
+    return true;
+  }
+
   finishShift() {
     soundEngine.stopSpeech();
     soundEngine.stopLineHum();
@@ -516,14 +632,17 @@ export class CentralGame {
       keysByProvider: {
         ...this.aiConfig.keysByProvider,
         ...(partial.keysByProvider || {})
+      },
+      cachedModelsByProvider: {
+        ...this.aiConfig.cachedModelsByProvider,
+        ...(partial.cachedModelsByProvider || {})
       }
     };
 
-    // Auto-upgrade from robotic browser voice when a Gemini or OpenAI key is saved
     if (!partial.ttsProvider && next.ttsProvider === 'browser') {
-      if (next.provider === 'gemini' && next.keysByProvider.gemini?.trim()) {
+      if (next.keysByProvider.gemini?.trim()) {
         next.ttsProvider = 'gemini_tts';
-      } else if (next.provider === 'openai' && next.keysByProvider.openai?.trim()) {
+      } else if (next.keysByProvider.openai?.trim()) {
         next.ttsProvider = 'openai';
       }
     }
@@ -532,6 +651,35 @@ export class CentralGame {
     persistAiConfig(this.aiConfig);
     soundEngine.syncSettings(this.aiConfig);
     this.emit('config');
+  }
+
+  getModelsForProvider(provider = this.aiConfig.provider) {
+    const cached = this.aiConfig.cachedModelsByProvider?.[provider];
+    if (Array.isArray(cached) && cached.length > 0) {
+      return cached;
+    }
+    const meta = AI_PROVIDERS[provider];
+    return rankModelsForGame(provider, meta?.presets || []);
+  }
+
+  async fetchModelsForCurrentProvider() {
+    const provider = this.aiConfig.provider;
+    const res = await fetchProviderModels(this.aiConfig);
+    if (res.models?.length) {
+      this.updateAiConfig({
+        cachedModelsByProvider: { [provider]: res.models }
+      });
+    }
+    return res;
+  }
+
+  autoSelectBestModel() {
+    const models = this.getModelsForProvider(this.aiConfig.provider);
+    if (!models.length) return null;
+    const best = models[0];
+    this.updateAiConfig({ model: best.id });
+    this.notify(`Modelo inteligente selecionado: ${best.id}`);
+    return best;
   }
 
   clearCurrentProviderKey() {

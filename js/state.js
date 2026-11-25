@@ -5,8 +5,8 @@ export const SAVE_STORAGE_KEY = 'central11_save_v2';
 export const AI_CONFIG_STORAGE_KEY = 'central11_ai_v2';
 
 export const DEFAULT_AI_CONFIG = {
-  provider: 'offline',
-  model: 'local-contextual-v1',
+  provider: 'gemini',
+  model: 'gemini-2.5-flash',
   keysByProvider: {
     openrouter: '',
     gemini: '',
@@ -19,8 +19,9 @@ export const DEFAULT_AI_CONFIG = {
     together: '',
     custom: ''
   },
+  cachedModelsByProvider: {},
   customEndpoint: 'http://localhost:11434/v1/chat/completions',
-  ttsProvider: 'browser', // 'browser' | 'gemini_tts' | 'elevenlabs' | 'openai' | 'custom_tts'
+  ttsProvider: 'gemini_tts', // 'gemini_tts' | 'elevenlabs' | 'openai' | 'custom_tts' | 'browser'
   browserVoiceName: '',
   geminiTtsKey: '',
   elevenLabsKey: '',
@@ -39,7 +40,7 @@ export const DEFAULT_AI_CONFIG = {
 export const DEFAULT_OPERATOR_LOOK = {
   skin: '#f0be96',
   hair: '#251d1a',
-  hairStyle: 'short', // 'short' | 'spiky' | 'bob'
+  hairStyle: 'short',
   hoodie: '#2563eb',
   headsetLed: '#22c55e',
   glasses: false
@@ -58,7 +59,7 @@ export function createInitialState() {
     maxStrikes: 3,
     reputation: 50,
     policeHeat: 10,
-    policeRaid: null, // { timeLeft, active, hidden }
+    policeRaid: null,
     panicExcelMode: false,
     cryptoRate: 1.08,
     upgrades: {
@@ -74,6 +75,8 @@ export function createInitialState() {
     operatorLook: { ...DEFAULT_OPERATOR_LOOK },
     customVictims: [],
     completedIds: [],
+    failedVictimIds: [],
+    extractedSecrets: [],
     redeemedCodes: [],
     shiftLog: [],
     pc: {
@@ -150,6 +153,7 @@ export function addCustomVictim(state, payload) {
       rate: 1.0,
       gender,
       openaiVoice: gender === 'female' ? 'nova' : 'onyx',
+      geminiVoice: gender === 'female' ? 'Leda' : 'Charon',
       elevenLabsVoiceId: gender === 'female' ? 'EXAVITQu4vr4xnSDxMaL' : 'TxGEqnHWrfWFTfGW9XjX',
       voiceInstruction: `Fale em português do Brasil interpretando ${name} (${role}).`
     },
@@ -207,6 +211,9 @@ export function startCallState(state, victimId) {
     inspectedFiles: [],
     fakeScanRun: false,
     fakeShieldSent: false,
+    lastSource: '',
+    lastError: null,
+    lastPendingText: '',
     messages: [
       {
         role: 'victim',
@@ -225,23 +232,36 @@ export function startCallState(state, victimId) {
   return state.activeCall;
 }
 
+function recordExtractedSecret(state, call, secret) {
+  const code = String(secret || '').trim().toUpperCase();
+  if (!code) return;
+  call.extractedSecret = secret;
+  call.status = 'won';
+  if (!state.extractedSecrets.includes(code)) {
+    state.extractedSecrets.push(code);
+  }
+}
+
 export function applyCallTurnResult(state, victim, aiResult, playerText) {
   const call = state.activeCall;
   if (!call || call.status !== 'active') return { triggeredVirus: false };
 
   call.turns += 1;
-  call.messages.push({ role: 'player', text: playerText, timestamp: Date.now() });
-  state.shiftLog.push({
-    victimName: victim.name,
-    playerText,
-    replyText: aiResult.reply
-  });
-  if (state.shiftLog.length > 30) state.shiftLog.shift();
+  if (playerText) {
+    call.messages.push({ role: 'player', text: playerText, timestamp: Date.now() });
+    state.shiftLog.push({
+      victimName: victim.name,
+      playerText,
+      replyText: aiResult.reply
+    });
+    if (state.shiftLog.length > 30) state.shiftLog.shift();
+  }
 
   const scriptBonus = (state.upgrades.aiScripts || 0) * 3;
+  const hwNoiseSuspicion = (state.pc.activeViruses.length > 0 || state.pc.looseCable) ? 5 : 0;
   const trustDelta = (Number.isFinite(aiResult.trustDelta) ? aiResult.trustDelta : 0) +
     (aiResult.trustDelta > 0 ? scriptBonus : 0);
-  const suspicionDelta = Number.isFinite(aiResult.suspicionDelta) ? aiResult.suspicionDelta : 0;
+  const suspicionDelta = (Number.isFinite(aiResult.suspicionDelta) ? aiResult.suspicionDelta : 0) + hwNoiseSuspicion;
 
   call.trust = clamp(call.trust + trustDelta, 0, 100);
   call.suspicion = clamp(call.suspicion + suspicionDelta, 0, 100);
@@ -255,13 +275,12 @@ export function applyCallTurnResult(state, victim, aiResult, playerText) {
   let replyText = aiResult.reply || '...';
   const shouldReveal =
     Boolean(aiResult.revealSecret) ||
-    (call.trust >= 82 && call.suspicion < 75);
+    (call.trust >= 80 && call.suspicion < 75);
 
   if (shouldReveal && !call.extractedSecret) {
-    call.extractedSecret = victim.secretPayload;
-    call.status = 'won';
+    recordExtractedSecret(state, call, victim.secretPayload);
     if (!replyText.includes(victim.secretPayload)) {
-      replyText = `${replyText} Anota aí o código: ${victim.secretPayload}`;
+      replyText = `${replyText} Anota aí: ${victim.secretPayload}`;
     }
   }
 
@@ -275,6 +294,9 @@ export function applyCallTurnResult(state, victim, aiResult, playerText) {
   if (aiResult.hangUp || call.suspicion >= 100 || call.patience <= 0) {
     if (call.status !== 'won') {
       call.status = 'lost';
+      if (!state.failedVictimIds.includes(victim.id)) {
+        state.failedVictimIds.push(victim.id);
+      }
     }
   }
 
@@ -323,8 +345,7 @@ export function inspectRemoteFile(state, victim, fileIdx) {
       call.suspicion = clamp(call.suspicion + 15, 0, 100);
       return { ok: false, reason: 'A vítima viu você tentando abrir o arquivo secreto! Ative a Tela Preta!' };
     }
-    call.extractedSecret = victim.secretPayload;
-    call.status = 'won';
+    recordExtractedSecret(state, call, victim.secretPayload);
     return { ok: true, secretFound: victim.secretPayload, file };
   }
 
@@ -375,10 +396,13 @@ export function redeemSecretCode(state, rawCode, channel = 'giftcard') {
   if (state.redeemedCodes.includes(code)) {
     return { ok: false, reason: 'Esse código já foi resgatado.' };
   }
+  if (!state.extractedSecrets.includes(code)) {
+    return { ok: false, reason: 'Código não extraído! Convença a vítima na chamada ou roube via AnyControl.' };
+  }
 
   const victim = getAllVictims(state).find((v) => v.secretPayload.toUpperCase() === code);
   if (!victim) {
-    return { ok: false, reason: 'Código inválido ou ainda não liberado pelo alvo.' };
+    return { ok: false, reason: 'Código inválido.' };
   }
 
   state.redeemedCodes.push(code);
@@ -401,6 +425,30 @@ export function redeemSecretCode(state, rawCode, channel = 'giftcard') {
   }
 
   return { ok: true, victim, payout };
+}
+
+export function spoofRedialVictim(state, victimId) {
+  const cost = 60;
+  if (!state.failedVictimIds.includes(victimId)) {
+    return { ok: false, reason: 'Este alvo não bloqueou seu número.' };
+  }
+  if (state.wallet < cost) {
+    return { ok: false, reason: `Saldo insuficiente para Spoof (custa R$ ${cost}).` };
+  }
+  state.wallet -= cost;
+  state.policeHeat = clamp(state.policeHeat + 8, 0, 100);
+  state.failedVictimIds = state.failedVictimIds.filter((id) => id !== victimId);
+  return { ok: true, cost };
+}
+
+export function canEndShiftEarly(state) {
+  return (
+    state.shiftEarned >= state.quota &&
+    !state.activeCall &&
+    !state.policeRaid &&
+    !state.lastShiftReport &&
+    !state.gameOver
+  );
 }
 
 export function triggerPoliceRaid(state) {
@@ -611,6 +659,7 @@ export function advanceToNextDay(state) {
   state.shiftTimeLeft = state.shiftDurationSec;
   state.quota = Math.round(750 + (state.day - 1) * 440);
   state.shiftLog = [];
+  state.failedVictimIds = [];
   state.activeCall = null;
   state.policeRaid = null;
   state.panicExcelMode = false;
@@ -653,30 +702,38 @@ export function loadAiConfig(storage = typeof localStorage !== 'undefined' ? loc
     const raw = storage?.getItem(AI_CONFIG_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return {
+      const merged = {
         ...DEFAULT_AI_CONFIG,
         ...parsed,
         keysByProvider: {
           ...DEFAULT_AI_CONFIG.keysByProvider,
           ...(parsed.keysByProvider || {})
+        },
+        cachedModelsByProvider: {
+          ...DEFAULT_AI_CONFIG.cachedModelsByProvider,
+          ...(parsed.cachedModelsByProvider || {})
         }
       };
+      // Migrate removed offline mode to Gemini so BYOK gate prompts clearly
+      if (merged.provider === 'offline') {
+        merged.provider = 'gemini';
+        merged.model = 'gemini-2.5-flash';
+      }
+      return merged;
     }
 
-    // Silent local migration from v1 key storage without exposing keys
     const legacyRaw = storage?.getItem('central98_ai_v1');
     if (legacyRaw) {
       const legacy = JSON.parse(legacyRaw);
       const migrated = structuredClone(DEFAULT_AI_CONFIG);
-      const prov = legacy.provider || 'offline';
+      const prov = legacy.provider && legacy.provider !== 'offline' ? legacy.provider : 'gemini';
       migrated.provider = prov;
-      if (legacy.model) migrated.model = legacy.model;
+      if (legacy.model && legacy.model !== 'local-contextual-v1') migrated.model = legacy.model;
       if (legacy.customEndpoint) migrated.customEndpoint = legacy.customEndpoint;
       if (legacy.apiKey && prov in migrated.keysByProvider) {
         migrated.keysByProvider[prov] = legacy.apiKey;
       }
-      if (prov === 'gemini' && legacy.apiKey) migrated.ttsProvider = 'gemini_tts';
-      else if (prov === 'openai' && legacy.apiKey) migrated.ttsProvider = 'openai';
+      if (prov === 'openai' && legacy.apiKey) migrated.ttsProvider = 'openai';
       if (typeof legacy.voiceEnabled === 'boolean') migrated.voiceEnabled = legacy.voiceEnabled;
       if (typeof legacy.sfxEnabled === 'boolean') migrated.sfxEnabled = legacy.sfxEnabled;
       if (typeof legacy.voiceSpeed === 'number') migrated.voiceSpeed = legacy.voiceSpeed;
