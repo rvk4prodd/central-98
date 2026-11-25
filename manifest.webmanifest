@@ -1,0 +1,25 @@
+{
+  "name": "CENTRAL 98 — Call Center Simulator",
+  "short_name": "CENTRAL 98",
+  "description": "Simulador 2D satírico de call center golpista com IA local/BYOK, voz sintetizada e manutenção de PC.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#006d6f",
+  "theme_color": "#0b3d91",
+  "lang": "pt-BR",
+  "icons": [
+    {
+      "src": "./assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

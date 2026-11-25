@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b3d91" />
+  <title>CENTRAL 98 — Simulador de Call Center</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" href="./assets/icon-192.png" />
+  <link rel="stylesheet" href="./css/os98.css" />
+</head>
+<body>
+  <div class="os-shell">
+    <header class="top-hud" aria-label="Status do Turno">
+      <span id="hud-day" class="hud-pill">DIA 1</span>
+      <span id="hud-quota" class="hud-pill">META: R$ 0 / R$ 750</span>
+      <span id="hud-wallet" class="hud-pill">CAIXA: R$ 200</span>
+      <span id="hud-timer" class="hud-pill">03:30</span>
+      <span id="hud-temp" class="hud-pill">CPU 42°C</span>
+      <span id="hud-strikes" class="hud-pill">AVISOS 0/3</span>
+      <span id="toast-bar" class="toast-bar">Pronto para discar. Dica: use GeoTrace durante a ligação.</span>
+    </header>
+
+    <main id="desktop-workspace" class="desktop-workspace">
+      <nav id="desktop-icons" class="desktop-icons" aria-label="Atalhos da Área de Trabalho">
+        <button type="button" class="desk-icon" data-open-win="win-phone">
+          <svg width="28" height="28" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+            <rect x="2" y="4" width="12" height="8" fill="#1e293b"/>
+            <rect x="3" y="2" width="10" height="3" fill="#e11d48"/>
+            <rect x="5" y="7" width="6" height="4" fill="#f8fafc"/>
+          </svg>
+          <span>Fone98</span>
+        </button>
+        <button type="button" class="desk-icon" data-open-win="win-trace">
+          <svg width="28" height="28" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+            <rect x="2" y="2" width="12" height="12" fill="#064e3b"/>
+            <rect x="4" y="4" width="8" height="8" fill="#22c55e"/>
+            <rect x="7" y="2" width="2" height="12" fill="#064e3b"/>
+            <rect x="2" y="7" width="12" height="2" fill="#064e3b"/>
+          </svg>
+          <span>GeoTrace</span>
+        </button>
+        <button type="button" class="desk-icon" data-open-win="win-scamazon">
+          <svg width="28" height="28" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+            <rect x="2" y="4" width="12" height="10" fill="#d97706"/>
+            <rect x="4" y="2" width="8" height="3" fill="#fbbf24"/>
+            <rect x="5" y="7" width="6" height="4" fill="#16a34a"/>
+          </svg>
+          <span>Scamazon</span>
+        </button>
+        <button type="button" class="desk-icon" data-open-win="win-doctor">
+          <svg width="28" height="28" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+            <rect x="3" y="2" width="10" height="12" fill="#475569"/>
+            <rect x="5" y="4" width="6" height="4" fill="#38bdf8"/>
+            <rect x="6" y="10" width="4" height="2" fill="#ef4444"/>
+          </svg>
+          <span>PC Doctor</span>
+        </button>
+        <button type="button" class="desk-icon" data-open-win="win-config">
+          <svg width="28" height="28" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+            <rect x="3" y="3" width="10" height="10" fill="#334155"/>
+            <rect x="6" y="6" width="4" height="4" fill="#fde047"/>
+          </svg>
+          <span>Config IA</span>
+        </button>
+      </nav>
+
+      <!-- Windows -->
+      <section id="win-phone" class="os-window is-active" data-app-id="phone" data-title="Fone98">
+        <div class="win-titlebar">
+          <span>Fone98 — Central de Ligações VoIP</span>
+          <button type="button" class="win-btn" data-win-action="minimize" aria-label="Minimizar">_</button>
+        </div>
+        <div id="phone-body" class="win-body"></div>
+      </section>
+
+      <section id="win-trace" class="os-window" data-app-id="trace" data-title="GeoTrace">
+        <div class="win-titlebar">
+          <span>GeoTrace — Dossiê & Rastreio</span>
+          <button type="button" class="win-btn" data-win-action="minimize" aria-label="Minimizar">_</button>
+        </div>
+        <div id="trace-body" class="win-body"></div>
+      </section>
+
+      <section id="win-scamazon" class="os-window" data-app-id="scamazon" data-title="Scamazon">
+        <div class="win-titlebar">
+          <span>Scamazon — Resgate & Upgrades</span>
+          <button type="button" class="win-btn" data-win-action="minimize" aria-label="Minimizar">_</button>
+        </div>
+        <div id="scamazon-body" class="win-body"></div>
+      </section>
+
+      <section id="win-doctor" class="os-window is-minimized" data-app-id="doctor" data-title="PC Doctor">
+        <div class="win-titlebar">
+          <span>PC Doctor — Gabinete & Antivírus</span>
+          <button type="button" class="win-btn" data-win-action="minimize" aria-label="Minimizar">_</button>
+        </div>
+        <div id="doctor-body" class="win-body"></div>
+      </section>
+
+      <section id="win-config" class="os-window is-minimized" data-app-id="config" data-title="Config IA">
+        <div class="win-titlebar">
+          <span>Config IA & Áudio (Armazenamento Local)</span>
+          <button type="button" class="win-btn" data-win-action="minimize" aria-label="Minimizar">_</button>
+        </div>
+        <div id="config-body" class="win-body"></div>
+      </section>
+
+      <div id="virus-layer" aria-live="polite"></div>
+
+      <!-- 2D Corner Operator Cam -->
+      <aside class="operator-cam-box" aria-label="Câmera do Personagem">
+        <div class="operator-cam-header">
+          <span>CAM-01</span>
+          <span>REC</span>
+        </div>
+        <div class="operator-cam-frame">
+          <canvas id="operator-cam-canvas" width="64" height="64" class="pixel-canvas"></canvas>
+          <div id="operator-status-badge" data-mode="idle">EM LINHA</div>
+        </div>
+      </aside>
+    </main>
+
+    <div id="start-menu" class="start-menu is-hidden">
+      <button type="button" class="btn98" data-open-win="win-phone">Fone98 (Ligações)</button>
+      <button type="button" class="btn98" data-open-win="win-trace">GeoTrace (Dossiê)</button>
+      <button type="button" class="btn98" data-open-win="win-scamazon">Scamazon (Resgate/Loja)</button>
+      <button type="button" class="btn98" data-open-win="win-doctor">PC Doctor (Conserto)</button>
+      <button type="button" class="btn98" data-open-win="win-config">Config IA (API Key Local)</button>
+    </div>
+
+    <footer class="taskbar">
+      <button id="start-btn" type="button" class="btn98 start-btn">
+        <svg width="14" height="14" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true">
+          <rect x="0" y="0" width="5" height="5" fill="#dc2626"/>
+          <rect x="7" y="0" width="5" height="5" fill="#16a34a"/>
+          <rect x="0" y="7" width="5" height="5" fill="#2563eb"/>
+          <rect x="7" y="7" width="5" height="5" fill="#eab308"/>
+        </svg>
+        <span>Iniciar</span>
+      </button>
+      <div id="taskbar-tabs" class="taskbar-tabs"></div>
+    </footer>
+  </div>
+
+  <!-- BSOD Overlay -->
+  <div id="bsod-overlay" class="overlay-screen bsod-screen is-hidden" role="alertdialog" aria-modal="true">
+    <div class="bsod-box">
+      <div class="bsod-title">CENTRAL_OS_98</div>
+      <p>Ocorreu uma falha fatal por superaquecimento ou excesso de vírus no gabinete.</p>
+      <p>CÓDIGO: 0x000000DEAD_COOLER — Chame o técnico (você mesmo) para reiniciar.</p>
+      <button id="bsod-reboot-btn" type="button" class="btn98 btn-primary">Dar Tapa no Gabinete e Reiniciar</button>
+    </div>
+  </div>
+
+  <!-- End of Shift Evaluation Modal -->
+  <div id="shift-modal" class="overlay-screen is-hidden" role="dialog" aria-modal="true">
+    <div id="shift-modal-body" class="modal98"></div>
+  </div>
+
+  <!-- Fast Boot Splash -->
+  <div id="boot-splash" class="overlay-screen">
+    <div class="boot-box">
+      <h2>CENTRAL OS 98</h2>
+      <p>Carregando drivers de lábia &amp; placa de som 16-bit...</p>
+      <button id="boot-skip-btn" type="button" class="btn98 btn-primary">Entrar no Turno</button>
+    </div>
+  </div>
+
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>
