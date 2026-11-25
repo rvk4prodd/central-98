@@ -3,6 +3,7 @@ import { getAvailableVictims } from '../state.js';
 import { AI_PROVIDERS } from '../engine/ai-client.js';
 import { soundEngine } from '../engine/audio.js';
 import { drawBossPortrait, drawVictimPortrait } from '../engine/sprites.js';
+import { ConfigUi } from './config-ui.js';
 
 function escapeHtml(text) {
   return String(text || '')
@@ -25,11 +26,15 @@ export class AppRenderer {
     this.winMgr = winMgr;
     this.micActive = false;
     this.activeRec = null;
+    this.showCustomForm = false;
+    this.scamazonTab = 'giftcard'; // 'giftcard' | 'bank' | 'crypto'
 
     this.els = {
       phoneBody: document.getElementById('phone-body'),
+      remoteBody: document.getElementById('remote-body'),
       traceBody: document.getElementById('trace-body'),
       scamazonBody: document.getElementById('scamazon-body'),
+      fakeshieldBody: document.getElementById('fakeshield-body'),
       doctorBody: document.getElementById('doctor-body'),
       configBody: document.getElementById('config-body'),
       virusLayer: document.getElementById('virus-layer'),
@@ -37,20 +42,25 @@ export class AppRenderer {
       hudQuota: document.getElementById('hud-quota'),
       hudWallet: document.getElementById('hud-wallet'),
       hudTimer: document.getElementById('hud-timer'),
+      hudHeat: document.getElementById('hud-heat'),
       hudTemp: document.getElementById('hud-temp'),
       hudStrikes: document.getElementById('hud-strikes'),
       opBadge: document.getElementById('operator-status-badge'),
       toastBar: document.getElementById('toast-bar'),
+      raidBanner: document.getElementById('police-raid-banner'),
+      raidCountdown: document.getElementById('raid-countdown'),
+      excelOverlay: document.getElementById('excel-panic-overlay'),
       bsodOverlay: document.getElementById('bsod-overlay'),
       shiftModal: document.getElementById('shift-modal'),
       shiftModalBody: document.getElementById('shift-modal-body')
     };
 
+    this.configUi = new ConfigUi(this.els.configBody, this.game);
     this.bindDelegatedEvents();
   }
 
   bindDelegatedEvents() {
-    // Fone98 events
+    // PhoneLink VoIP events
     this.els.phoneBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');
       if (!btn) return;
@@ -58,6 +68,9 @@ export class AppRenderer {
 
       if (action === 'dial') {
         this.game.dialVictim(btn.dataset.victimId);
+      } else if (action === 'toggle-custom-form') {
+        this.showCustomForm = !this.showCustomForm;
+        this.renderPhone('update');
       } else if (action === 'hangup') {
         this.game.hangUpCall();
       } else if (action === 'hold') {
@@ -72,11 +85,14 @@ export class AppRenderer {
         }
       } else if (action === 'copy-secret') {
         const secret = btn.dataset.secret || '';
-        const redeemInput = document.getElementById('redeem-code-input');
-        if (redeemInput) redeemInput.value = secret;
+        const channel = btn.dataset.channel || 'giftcard';
+        this.scamazonTab = channel;
         navigator.clipboard?.writeText(secret).catch(() => {});
         this.winMgr.openOrFocus('win-scamazon');
-        this.game.notify(`Código ${secret} copiado! Clique em Resgatar na Scamazon.`);
+        this.renderScamazon();
+        const redeemInput = document.getElementById('redeem-code-input');
+        if (redeemInput) redeemInput.value = secret;
+        this.game.notify(`Código ${secret} pronto para resgate na aba ${channel.toUpperCase()}!`);
       } else if (action === 'soundboard') {
         soundEngine.playSoundboard(btn.dataset.sound);
       } else if (action === 'mic') {
@@ -85,14 +101,42 @@ export class AppRenderer {
     });
 
     this.els.phoneBody.addEventListener('submit', (e) => {
-      if (e.target.id !== 'call-chat-form') return;
-      e.preventDefault();
-      const input = document.getElementById('call-msg-input');
-      if (!input) return;
-      const val = input.value.trim();
-      if (!val) return;
-      input.value = '';
-      this.game.sendPlayerMessage(val);
+      if (e.target.id === 'call-chat-form') {
+        e.preventDefault();
+        const input = document.getElementById('call-msg-input');
+        if (!input) return;
+        const val = input.value.trim();
+        if (!val) return;
+        input.value = '';
+        this.game.sendPlayerMessage(val);
+      } else if (e.target.id === 'custom-victim-form') {
+        e.preventDefault();
+        const res = this.game.createCustomVictim({
+          name: document.getElementById('cv-name')?.value,
+          role: document.getElementById('cv-role')?.value,
+          company: document.getElementById('cv-company')?.value,
+          payout: document.getElementById('cv-payout')?.value,
+          scamChannel: document.getElementById('cv-channel')?.value,
+          gender: document.getElementById('cv-gender')?.value,
+          personaPrompt: document.getElementById('cv-persona')?.value,
+          isScambaiter: document.getElementById('cv-baiter')?.checked
+        });
+        if (res.ok) {
+          this.showCustomForm = false;
+          this.renderPhone('update');
+        }
+      }
+    });
+
+    // AnyControl Remote Desktop events
+    this.els.remoteBody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-remote-action]');
+      if (!btn) return;
+      const act = btn.dataset.remoteAction;
+      if (act === 'connect') this.game.connectAnyControl();
+      else if (act === 'curtain') this.game.toggleBlackCurtain();
+      else if (act === 'fakescan') this.game.runRemoteFakeScan();
+      else if (act === 'open-file') this.game.openRemoteFile(Number(btn.dataset.fileIdx));
     });
 
     // GeoTrace events
@@ -112,90 +156,54 @@ export class AppRenderer {
       }
     });
 
-    // Scamazon events
+    // Scamazon & CryptoVault events
+    this.els.scamazonBody.addEventListener('click', (e) => {
+      const tabBtn = e.target.closest('button[data-scam-tab]');
+      if (tabBtn) {
+        this.scamazonTab = tabBtn.dataset.scamTab;
+        this.renderScamazon();
+        return;
+      }
+      const btn = e.target.closest('button[data-action="buy-upgrade"]');
+      if (btn) this.game.buyUpgrade(btn.dataset.upgradeId);
+    });
+
     this.els.scamazonBody.addEventListener('submit', (e) => {
       if (e.target.id !== 'redeem-form') return;
       e.preventDefault();
       const input = document.getElementById('redeem-code-input');
       if (!input) return;
-      const res = this.game.redeemCode(input.value);
+      const res = this.game.redeemCode(input.value, this.scamazonTab);
       if (res.ok) input.value = '';
     });
 
-    this.els.scamazonBody.addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-action="buy-upgrade"]');
-      if (!btn) return;
-      this.game.buyUpgrade(btn.dataset.upgradeId);
+    // FakeShield AV events
+    this.els.fakeshieldBody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action="send-fakeshield"]');
+      if (btn) this.game.deployFakeShield();
     });
 
     // PC Doctor events
     this.els.doctorBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-repair]');
-      if (!btn) return;
-      this.game.repairPc(btn.dataset.repair);
+      if (btn) this.game.repairPc(btn.dataset.repair);
     });
 
     // Virus popups
     this.els.virusLayer.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-close-virus]');
-      if (!btn) return;
-      this.game.closeVirusPopup(btn.dataset.closeVirus);
+      if (btn) this.game.closeVirusPopup(btn.dataset.closeVirus);
     });
 
-    // Config IA events
-    this.els.configBody.addEventListener('change', (e) => {
-      const el = e.target;
-      if (el.id === 'cfg-provider') {
-        const provider = el.value;
-        const defaultModel = AI_PROVIDERS[provider]?.defaultModel || '';
-        this.game.updateAiConfig({ provider, model: defaultModel });
-      } else if (el.id === 'cfg-tts-mode') {
-        this.game.updateAiConfig({ ttsMode: el.value });
-      } else if (el.id === 'cfg-voice-enabled') {
-        this.game.updateAiConfig({ voiceEnabled: el.checked });
-      } else if (el.id === 'cfg-sfx-enabled') {
-        this.game.updateAiConfig({ sfxEnabled: el.checked });
-      } else if (el.id === 'cfg-voice-speed') {
-        this.game.updateAiConfig({ voiceSpeed: parseFloat(el.value) || 1.0 });
-      } else if (el.id === 'cfg-volume') {
-        this.game.updateAiConfig({ volume: parseFloat(el.value) || 0.85 });
-      }
+    // Panic Excel / Raid controls
+    document.getElementById('panic-excel-btn')?.addEventListener('click', () => {
+      this.game.togglePanicExcel();
     });
-
-    this.els.configBody.addEventListener('submit', (e) => {
-      if (e.target.id !== 'ai-config-form') return;
-      e.preventDefault();
-      const key = document.getElementById('cfg-apikey')?.value || '';
-      const model = document.getElementById('cfg-model')?.value || '';
-      const customEndpoint = document.getElementById('cfg-endpoint')?.value || '';
-      this.game.updateAiConfig({ apiKey: key.trim(), model: model.trim(), customEndpoint: customEndpoint.trim() });
-      this.game.notify('Configurações de IA salvas localmente no seu dispositivo.');
+    document.getElementById('raid-dodge-btn')?.addEventListener('click', () => {
+      if (!this.game.state.panicExcelMode) this.game.togglePanicExcel();
     });
-
-    this.els.configBody.addEventListener('click', async (e) => {
-      const btn = e.target.closest('button[data-cfg-action]');
-      if (!btn) return;
-      const act = btn.dataset.cfgAction;
-
-      if (act === 'test') {
-        const key = document.getElementById('cfg-apikey')?.value || '';
-        const model = document.getElementById('cfg-model')?.value || '';
-        const customEndpoint = document.getElementById('cfg-endpoint')?.value || '';
-        this.game.updateAiConfig({ apiKey: key.trim(), model: model.trim(), customEndpoint: customEndpoint.trim() });
-        const statusEl = document.getElementById('cfg-test-status');
-        if (statusEl) statusEl.textContent = 'Testando conexão...';
-        const res = await this.game.testAiConnection();
-        if (statusEl) {
-          statusEl.textContent = res.message;
-          statusEl.className = `status-pill ${res.ok ? 'is-ok' : 'is-bad'}`;
-        }
-      } else if (act === 'clear-key') {
-        this.game.clearApiKey();
-      } else if (act === 'reset-save') {
-        if (window.confirm('Apagar todo o progresso do jogo e começar do Dia 1?')) {
-          this.game.resetCampaign();
-        }
-      }
+    document.getElementById('excel-return-btn')?.addEventListener('click', () => {
+      if (this.game.state.panicExcelMode) this.game.togglePanicExcel();
     });
 
     // BSOD reboot button
@@ -203,11 +211,10 @@ export class AppRenderer {
       this.game.repairPc('reboot');
     });
 
-    // Shift modal next day / restart
+    // Shift modal next day
     this.els.shiftModalBody.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action="next-day"]');
-      if (!btn) return;
-      this.game.nextDay();
+      if (btn) this.game.nextDay();
     });
   }
 
@@ -215,29 +222,23 @@ export class AppRenderer {
     if (this.micActive && this.activeRec) {
       this.activeRec.stop();
       this.micActive = false;
-      this.renderPhone();
+      this.renderPhone('update');
       return;
     }
 
     this.micActive = true;
-    this.renderPhone();
+    this.renderPhone('update');
     this.activeRec = soundEngine.listenMicrophone({
       onResult: (transcript) => {
         const input = document.getElementById('call-msg-input');
-        if (input && transcript) {
-          input.value = transcript;
-        }
-        if (transcript) {
-          this.game.sendPlayerMessage(transcript);
-        }
+        if (input && transcript) input.value = transcript;
+        if (transcript) this.game.sendPlayerMessage(transcript);
       },
-      onError: (errMsg) => {
-        this.game.notify(errMsg, true);
-      },
+      onError: (errMsg) => this.game.notify(errMsg, true),
       onEnd: () => {
         this.micActive = false;
         this.activeRec = null;
-        this.renderPhone();
+        this.renderPhone('update');
       }
     });
   }
@@ -245,11 +246,13 @@ export class AppRenderer {
   renderAll(eventType = 'update') {
     this.renderHud();
     this.renderPhone(eventType);
+    this.renderRemote();
     this.renderTrace();
+    this.renderFakeShield();
     this.renderScamazon();
     this.renderDoctor();
     if (eventType === 'update' || eventType === 'config' || eventType === 'reset') {
-      this.renderConfig();
+      this.configUi.render();
     }
     this.renderViruses();
     this.renderOverlays();
@@ -258,10 +261,12 @@ export class AppRenderer {
   renderHud() {
     const s = this.game.state;
     this.els.hudDay.textContent = `DIA ${s.day}`;
-    this.els.hudQuota.textContent = `META: R$ ${s.shiftEarned} / R$ ${s.quota}`;
+    this.els.hudQuota.textContent = `META R$ ${s.shiftEarned}/${s.quota}`;
     this.els.hudQuota.classList.toggle('is-ok', s.shiftEarned >= s.quota);
-    this.els.hudWallet.textContent = `CAIXA: R$ ${s.wallet}`;
+    this.els.hudWallet.textContent = `CAIXA R$ ${s.wallet}`;
     this.els.hudTimer.textContent = formatTime(s.shiftTimeLeft);
+    this.els.hudHeat.textContent = `POLÍCIA ${Math.round(s.policeHeat)}%`;
+    this.els.hudHeat.classList.toggle('is-danger', s.policeHeat >= 65);
     this.els.hudTemp.textContent = `CPU ${Math.round(s.pc.cpuTemp)}°C`;
     this.els.hudTemp.classList.toggle('is-danger', s.pc.cpuTemp >= 80);
     this.els.hudStrikes.textContent = `AVISOS ${s.strikes}/${s.maxStrikes}`;
@@ -272,7 +277,7 @@ export class AppRenderer {
       talking: 'VOZ ATIVA',
       sweating: 'PRESSÃO!',
       celebrating: 'GOLPE FEITO!',
-      panicking: 'ALERTA PC!'
+      panicking: 'ALERTA!'
     };
     this.els.opBadge.textContent = modeLabels[this.game.operatorMode] || 'ONLINE';
     this.els.opBadge.dataset.mode = this.game.operatorMode;
@@ -287,7 +292,6 @@ export class AppRenderer {
     const call = s.activeCall;
     const victim = this.game.getActiveVictim();
 
-    // Avoid wiping user's typed draft on 1s timer ticks
     const existingInput = document.getElementById('call-msg-input');
     const draftValue = existingInput ? existingInput.value : '';
     const hadFocus = existingInput && document.activeElement === existingInput;
@@ -304,7 +308,36 @@ export class AppRenderer {
     }
 
     if (!call || !victim) {
+      if (eventType === 'tick' && this.showCustomForm) return;
       const targets = getAvailableVictims(s);
+      const customBox = this.showCustomForm
+        ? `
+          <form id="custom-victim-form" class="custom-victim-box">
+            <div class="box-title">Criar Alvo de IA Personalizado</div>
+            <div class="cfg-row-2">
+              <input id="cv-name" type="text" class="win-input" placeholder="Nome (ex.: Seu Jorge)" required />
+              <input id="cv-role" type="text" class="win-input" placeholder="Cargo (ex.: Dono de Padaria)" />
+              <input id="cv-company" type="text" class="win-input" placeholder="Empresa (ex.: Pão Quente)" />
+              <input id="cv-payout" type="number" class="win-input" value="950" min="200" max="5000" />
+              <select id="cv-channel" class="win-input">
+                <option value="bank">Canal: Banco / PIX</option>
+                <option value="giftcard">Canal: Gift Card</option>
+                <option value="crypto">Canal: CryptoVault</option>
+              </select>
+              <select id="cv-gender" class="win-input">
+                <option value="male">Voz Masculina</option>
+                <option value="female">Voz Feminina</option>
+              </select>
+            </div>
+            <input id="cv-persona" type="text" class="win-input" placeholder="Personalidade (ex.: desconfia de ligações, mas tem medo do fisco)..." required />
+            <div class="cfg-actions">
+              <label class="inline-check"><input id="cv-baiter" type="checkbox" /> É um Scambaiter?</label>
+              <button type="submit" class="win-btn win-btn-primary">Salvar Alvo</button>
+            </div>
+          </form>
+        `
+        : '';
+
       const rows = targets
         .map((v) => {
           const done = s.completedIds.includes(v.id);
@@ -313,13 +346,14 @@ export class AppRenderer {
               <div class="target-info">
                 <div class="target-name">
                   ${escapeHtml(v.name)}
-                  ${v.isScambaiter ? '<span class="tag tag-warn">RISCO VÍRUS</span>' : ''}
+                  ${v.isCustom ? '<span class="tag tag-accent">CUSTOM</span>' : ''}
+                  ${v.isScambaiter ? '<span class="tag tag-warn">SCAMBAITER</span>' : ''}
                   ${done ? '<span class="tag tag-ok">EXTRAÍDO</span>' : ''}
                 </div>
                 <div class="target-meta">${escapeHtml(v.role)} — ${escapeHtml(v.company)}</div>
                 <div class="target-goal">Alvo: <strong>${escapeHtml(v.goalLabel)}</strong> • Prêmio: <strong>R$ ${v.payout}</strong></div>
               </div>
-              <button type="button" class="btn98 btn-primary" data-action="dial" data-victim-id="${v.id}">
+              <button type="button" class="win-btn win-btn-primary" data-action="dial" data-victim-id="${v.id}">
                 Ligar
               </button>
             </div>
@@ -329,9 +363,15 @@ export class AppRenderer {
 
       this.els.phoneBody.innerHTML = `
         <div class="app-banner">
-          <span>Lista de Discagem — Dia ${s.day}</span>
-          <span class="badge-provider">${escapeHtml(AI_PROVIDERS[this.game.aiConfig.provider]?.label || 'Local')}</span>
+          <span>Discador Dia ${s.day} (${targets.length} alvos)</span>
+          <div class="banner-right">
+            <span class="badge-provider">${escapeHtml(AI_PROVIDERS[this.game.aiConfig.provider]?.label || 'Local')}</span>
+            <button type="button" class="win-btn win-btn-mini" data-action="toggle-custom-form">
+              ${this.showCustomForm ? 'Fechar Criador' : '+ Criar Alvo'}
+            </button>
+          </div>
         </div>
+        ${customBox}
         <div class="target-list">${rows}</div>
       `;
       return;
@@ -354,7 +394,7 @@ export class AppRenderer {
 
     const hintsHtml = victim.scriptHints
       .map(
-        (h, i) => `<button type="button" class="btn98 btn-hint" data-action="hint" data-text="${escapeHtml(h)}">Script ${i + 1}</button>`
+        (h, i) => `<button type="button" class="win-btn win-btn-mini" data-action="hint" data-text="${escapeHtml(h)}">Script ${i + 1}</button>`
       )
       .join('');
 
@@ -362,11 +402,11 @@ export class AppRenderer {
       ? `
         <div class="secret-banner">
           <div>
-            <strong>DADO EXTRAÍDO:</strong>
+            <strong>EXTRAÍDO:</strong>
             <code>${escapeHtml(call.extractedSecret)}</code>
           </div>
-          <button type="button" class="btn98 btn-cash" data-action="copy-secret" data-secret="${escapeHtml(call.extractedSecret)}">
-            ${call.redeemed ? 'Já Resgatado' : 'Copiar p/ Scamazon'}
+          <button type="button" class="win-btn win-btn-cash" data-action="copy-secret" data-secret="${escapeHtml(call.extractedSecret)}" data-channel="${escapeHtml(victim.scamChannel || 'giftcard')}">
+            ${call.redeemed ? 'Já Resgatado' : 'Resgatar Agora'}
           </button>
         </div>
       `
@@ -374,19 +414,19 @@ export class AppRenderer {
 
     this.els.phoneBody.innerHTML = `
       <div class="call-header">
-        <canvas id="victim-portrait-canvas" width="32" height="32" class="pixel-canvas victim-portrait"></canvas>
+        <canvas id="victim-portrait-canvas" width="48" height="48" class="pixel-canvas victim-portrait"></canvas>
         <div class="call-id">
           <div class="call-name">${escapeHtml(victim.name)} <small>(${escapeHtml(victim.phone)})</small></div>
           <div class="call-goal">${escapeHtml(victim.goalLabel)} • R$ ${victim.payout}</div>
           <div class="voice-wave ${this.game.isSpeaking ? 'is-active' : ''}">
             <span></span><span></span><span></span><span></span><span></span>
-            <small>${this.game.isSpeaking ? 'Falando na linha...' : call.onHold ? 'Em espera' : 'Linha aberta'}</small>
+            <small>${this.game.isSpeaking ? 'Falando na linha...' : call.onHold ? 'Em espera' : 'Linha conectada'}</small>
           </div>
         </div>
         <div class="call-actions-top">
-          <button type="button" class="btn98" data-action="replay" title="Ouvir última fala novamente">Ouvir</button>
-          <button type="button" class="btn98 ${call.onHold ? 'is-pressed' : ''}" data-action="hold">${call.onHold ? 'Retomar' : 'Espera'}</button>
-          <button type="button" class="btn98 btn-danger" data-action="hangup">${call.status === 'active' ? 'Desligar' : 'Voltar'}</button>
+          <button type="button" class="win-btn" data-action="replay">Ouvir</button>
+          <button type="button" class="win-btn ${call.onHold ? 'is-pressed' : ''}" data-action="hold">${call.onHold ? 'Retomar' : 'Espera'}</button>
+          <button type="button" class="win-btn win-btn-danger" data-action="hangup">${call.status === 'active' ? 'Desligar' : 'Voltar'}</button>
         </div>
       </div>
 
@@ -414,18 +454,18 @@ export class AppRenderer {
 
       <div class="script-strip">
         ${hintsHtml}
-        <button type="button" class="btn98 btn-mini" data-action="soundboard" data-sound="typing">SFX Teclado</button>
-        <button type="button" class="btn98 btn-mini" data-action="soundboard" data-sound="beep">SFX Sistema</button>
+        <button type="button" class="win-btn win-btn-mini" data-action="soundboard" data-sound="typing">SFX Teclado</button>
+        <button type="button" class="win-btn win-btn-mini" data-action="soundboard" data-sound="beep">SFX Sistema</button>
       </div>
 
       <form id="call-chat-form" class="chat-form">
-        <input id="call-msg-input" type="text" class="input98" autocomplete="off"
-          placeholder="${call.status === 'active' ? 'Fale ou digite sua lábia aqui...' : 'Ligação encerrada — clique em Voltar'}"
+        <input id="call-msg-input" type="text" class="win-input" autocomplete="off"
+          placeholder="${call.status === 'active' ? 'Fale no mic ou digite sua lábia...' : 'Ligação encerrada — clique em Voltar'}"
           ${call.status !== 'active' ? 'disabled' : ''} />
-        <button type="button" class="btn98 ${this.micActive ? 'btn-danger' : ''}" data-action="mic" ${call.status !== 'active' ? 'disabled' : ''}>
-          ${this.micActive ? 'Parar Mic' : 'Mic'}
+        <button type="button" class="win-btn ${this.micActive ? 'win-btn-danger' : ''}" data-action="mic" ${call.status !== 'active' ? 'disabled' : ''}>
+          ${this.micActive ? 'Parar' : 'Mic'}
         </button>
-        <button type="submit" class="btn98 btn-primary" ${call.status !== 'active' || this.game.isSending ? 'disabled' : ''}>
+        <button type="submit" class="win-btn win-btn-primary" ${call.status !== 'active' || this.game.isSending ? 'disabled' : ''}>
           ${this.game.isSending ? '...' : 'Enviar'}
         </button>
       </form>
@@ -444,6 +484,69 @@ export class AppRenderer {
     }
   }
 
+  renderRemote() {
+    const call = this.game.state.activeCall;
+    const victim = this.game.getActiveVictim();
+
+    if (!call || !victim) {
+      this.els.remoteBody.innerHTML = `
+        <div class="empty-card">
+          <strong>AnyControl Desktop Remoto</strong>
+          <p class="muted-note">Ligue para uma vítima e conquiste pelo menos <strong>35% de Confiança</strong> para assumir o PC dela, rodar scanner falso, ativar Tela Preta e puxar arquivos secretos.</p>
+        </div>
+      `;
+      return;
+    }
+
+    if (!call.remoteConnected) {
+      this.els.remoteBody.innerHTML = `
+        <div class="empty-card">
+          <strong>Sessão Pronta: ${escapeHtml(victim.name)}</strong>
+          <p class="muted-note">Confiança atual: <strong>${call.trust}%</strong> (mínimo 35% para o alvo aceitar acesso remoto).</p>
+          <button type="button" class="win-btn win-btn-primary" data-remote-action="connect" ${call.status !== 'active' ? 'disabled' : ''}>
+            Conectar ao PC da Vítima
+          </button>
+        </div>
+      `;
+      return;
+    }
+
+    const filesHtml = (victim.remoteFiles || [])
+      .map((f, idx) => {
+        const opened = call.inspectedFiles.includes(idx);
+        return `
+          <div class="remote-file ${opened ? 'is-opened' : ''} ${f.isSecret ? 'is-secret' : ''}">
+            <div>
+              <div class="file-name">${escapeHtml(f.name)}</div>
+              <div class="muted-note">${opened ? escapeHtml(f.label) : 'Clique para inspecionar'}</div>
+            </div>
+            <button type="button" class="win-btn win-btn-mini" data-remote-action="open-file" data-file-idx="${idx}">
+              ${opened ? 'Lido' : 'Abrir'}
+            </button>
+          </div>
+        `;
+      })
+      .join('');
+
+    this.els.remoteBody.innerHTML = `
+      <div class="remote-toolbar">
+        <span class="tag tag-ok">CONECTADO: ${escapeHtml(victim.name)}</span>
+        <button type="button" class="win-btn win-btn-mini ${call.blackCurtain ? 'win-btn-primary' : ''}" data-remote-action="curtain">
+          ${call.blackCurtain ? 'Tela Preta: ON' : 'Ativar Tela Preta'}
+        </button>
+        <button type="button" class="win-btn win-btn-mini win-btn-danger" data-remote-action="fakescan" ${call.fakeScanRun ? 'disabled' : ''}>
+          ${call.fakeScanRun ? 'FakeScan Enviado' : 'Rodar FakeScan'}
+        </button>
+      </div>
+      <div class="remote-screen ${call.blackCurtain ? 'is-curtained' : ''}">
+        <div class="remote-screen-caption">
+          ${call.blackCurtain ? 'TELA PRETA NA VÍTIMA: Ela não vê você mexendo nos arquivos!' : 'VISÍVEL PARA A VÍTIMA: Abrir arquivos sem Tela Preta gera suspeita!'}
+        </div>
+        <div class="remote-files-grid">${filesHtml}</div>
+      </div>
+    `;
+  }
+
   renderTrace() {
     const call = this.game.state.activeCall;
     const victim = this.game.getActiveVictim();
@@ -453,8 +556,7 @@ export class AppRenderer {
         <div class="trace-layout">
           <canvas id="trace-globe-canvas" width="160" height="120" class="trace-canvas"></canvas>
           <div class="trace-side">
-            <p class="muted-note">Inicie uma ligação no <strong>Fone98</strong> para rastrear o IP e puxar o dossiê do alvo em tempo real.</p>
-            <p class="muted-note">Citar fatos do dossiê na conversa aumenta muito a confiança da vítima.</p>
+            <p class="muted-note">Inicie uma ligação no <strong>PhoneLink</strong> para rastrear o IP e desbloquear o dossiê completo da vítima.</p>
           </div>
         </div>
       `;
@@ -468,7 +570,7 @@ export class AppRenderer {
           ? `
             <div class="fact-item is-unlocked">
               <div><strong>${escapeHtml(fact.label)}:</strong> ${escapeHtml(fact.value)}</div>
-              <button type="button" class="btn98 btn-mini" data-action="use-fact" data-fact="${escapeHtml(fact.value)}">Inserir</button>
+              <button type="button" class="win-btn win-btn-mini" data-action="use-fact" data-fact="${escapeHtml(fact.value)}">Inserir</button>
             </div>
           `
           : `<div class="fact-item is-locked">[CRIPTOGRAFADO — Rastreie para revelar #${idx + 1}]</div>`;
@@ -486,7 +588,7 @@ export class AppRenderer {
             <div class="meter-track"><div class="meter-fill is-trust" style="width:${call.traceProgress}%"></div></div>
             <span>${Math.round(call.traceProgress)}%</span>
           </div>
-          <button type="button" class="btn98 btn-primary" data-action="toggle-trace" ${call.traceProgress >= 100 || call.status !== 'active' ? 'disabled' : ''}>
+          <button type="button" class="win-btn win-btn-primary" data-action="toggle-trace" ${call.traceProgress >= 100 || call.status !== 'active' ? 'disabled' : ''}>
             ${call.traceProgress >= 100 ? 'Dossiê 100%' : call.isTracing ? 'Pausar Rastreio' : 'Iniciar GeoTrace'}
           </button>
         </div>
@@ -495,10 +597,42 @@ export class AppRenderer {
     `;
   }
 
+  renderFakeShield() {
+    const call = this.game.state.activeCall;
+    const victim = this.game.getActiveVictim();
+
+    if (!call || !victim) {
+      this.els.fakeshieldBody.innerHTML = `
+        <div class="empty-card">
+          <strong>FakeShield AV — Gerador de Pânico</strong>
+          <p class="muted-note">Durante uma chamada ativa, dispare um alerta falso de "Trojan Bancário" na tela da vítima para aumentar a confiança dela no seu suporte técnico (+20%). Cuidado com Scambaiters!</p>
+        </div>
+      `;
+      return;
+    }
+
+    this.els.fakeshieldBody.innerHTML = `
+      <div class="fakeshield-card">
+        <div class="fakeshield-banner">ALERTA SIMULADO: TROJAN_BANCARIO_WIN32 DETECTADO</div>
+        <p class="muted-note">Alvo na linha: <strong>${escapeHtml(victim.name)}</strong></p>
+        <p class="muted-note">Envia uma notificação assustadora simulando risco de bloqueio/vírus para pressionar o alvo.</p>
+        <button type="button" class="win-btn win-btn-danger" data-action="send-fakeshield" ${call.fakeShieldSent || call.status !== 'active' ? 'disabled' : ''}>
+          ${call.fakeShieldSent ? 'Alerta Já Disparado' : 'Disparar Alerta FakeShield'}
+        </button>
+      </div>
+    `;
+  }
+
   renderScamazon() {
     const s = this.game.state;
     const redeemEl = document.getElementById('redeem-code-input');
     const draftCode = redeemEl ? redeemEl.value : '';
+
+    const channelInfo = {
+      giftcard: 'Resgate de Vale-Presente Scamazon (taxa 1.0x imediata)',
+      bank: 'Validação PIX / Conta Corporativa (taxa 1.0x imediata)',
+      crypto: `CryptoVault BTC/MemeCoin (cotação ao vivo: ${s.cryptoRate.toFixed(2)}x)`
+    };
 
     const upgradesHtml = UPGRADES.map((u) => {
       const lvl = s.upgrades[u.id] || 0;
@@ -512,22 +646,27 @@ export class AppRenderer {
             <div class="upgrade-desc">${escapeHtml(u.shortDesc)}</div>
             <div class="upgrade-effect">${escapeHtml(u.effectLabel)}</div>
           </div>
-          <button type="button" class="btn98 ${canBuy ? 'btn-primary' : ''}" data-action="buy-upgrade" data-upgrade-id="${u.id}" ${maxed || !canBuy ? 'disabled' : ''}>
-            ${maxed ? 'MÁXIMO' : `R$ ${price}`}
+          <button type="button" class="win-btn ${canBuy ? 'win-btn-primary' : ''}" data-action="buy-upgrade" data-upgrade-id="${u.id}" ${maxed || !canBuy ? 'disabled' : ''}>
+            ${maxed ? 'MÁX' : `R$ ${price}`}
           </button>
         </div>
       `;
     }).join('');
 
     this.els.scamazonBody.innerHTML = `
+      <div class="subtabs">
+        <button type="button" class="subtab-btn ${this.scamazonTab === 'giftcard' ? 'is-active' : ''}" data-scam-tab="giftcard">Gift Cards</button>
+        <button type="button" class="subtab-btn ${this.scamazonTab === 'bank' ? 'is-active' : ''}" data-scam-tab="bank">Banco / PIX</button>
+        <button type="button" class="subtab-btn ${this.scamazonTab === 'crypto' ? 'is-active' : ''}" data-scam-tab="crypto">Crypto (${s.cryptoRate.toFixed(2)}x)</button>
+      </div>
       <form id="redeem-form" class="redeem-box">
-        <div class="redeem-title">SCAMAZON — Central de Resgate & Lavagem</div>
+        <div class="redeem-title">${escapeHtml(channelInfo[this.scamazonTab])}</div>
         <div class="redeem-row">
-          <input id="redeem-code-input" type="text" class="input98" placeholder="Cole código / senha / PIX extraído..." value="${escapeHtml(draftCode)}" />
-          <button type="submit" class="btn98 btn-cash">Resgatar</button>
+          <input id="redeem-code-input" type="text" class="win-input" placeholder="Cole código / senha / PIX extraído..." value="${escapeHtml(draftCode)}" />
+          <button type="submit" class="win-btn win-btn-cash">Resgatar</button>
         </div>
       </form>
-      <div class="shop-header">Upgrades do Escritório & PC (Caixa: <strong>R$ ${s.wallet}</strong>)</div>
+      <div class="shop-header">Upgrades do Setup & Escritório (Caixa: <strong>R$ ${s.wallet}</strong>)</div>
       <div class="upgrade-list">${upgradesHtml}</div>
     `;
   }
@@ -558,90 +697,21 @@ export class AppRenderer {
       <div class="pc-interior">
         <div class="pc-part ${pc.dustLevel > 50 ? 'is-warn' : ''}">
           <div><strong>Cooler & Dissipador</strong><br/><small>Poeira: ${Math.round(pc.dustLevel)}%</small></div>
-          <button type="button" class="btn98 btn-primary" data-repair="dust">Soprar Poeira</button>
+          <button type="button" class="win-btn win-btn-primary" data-repair="dust">Soprar Poeira</button>
         </div>
         <div class="pc-part ${pc.looseCable ? 'is-bad' : ''}">
           <div><strong>Cabo de Força SATA</strong><br/><small>${pc.looseCable ? 'SOLTO! Causando instabilidade' : 'Conectado firme'}</small></div>
-          <button type="button" class="btn98 ${pc.looseCable ? 'btn-danger' : ''}" data-repair="cable" ${pc.looseCable ? '' : 'disabled'}>Encaixar</button>
+          <button type="button" class="win-btn ${pc.looseCable ? 'win-btn-danger' : ''}" data-repair="cable" ${pc.looseCable ? '' : 'disabled'}>Encaixar</button>
         </div>
         <div class="pc-part ${pc.burntCap ? 'is-bad' : ''}">
           <div><strong>Capacitor VRM</strong><br/><small>${pc.burntCap ? 'ESTUFADO! Esquentando CPU' : 'Tensão normal'}</small></div>
-          <button type="button" class="btn98 ${pc.burntCap ? 'btn-danger' : ''}" data-repair="capacitor" ${pc.burntCap ? '' : 'disabled'}>Trocar Peça</button>
+          <button type="button" class="win-btn ${pc.burntCap ? 'win-btn-danger' : ''}" data-repair="capacitor" ${pc.burntCap ? '' : 'disabled'}>Trocar Peça</button>
         </div>
         <div class="pc-part ${pc.activeViruses.length > 0 ? 'is-bad' : ''}">
-          <div><strong>Avastão 98 Scanner</strong><br/><small>${pc.activeViruses.length} vírus ativo(s)</small></div>
-          <button type="button" class="btn98 ${pc.activeViruses.length > 0 ? 'btn-danger' : ''}" data-repair="antivirus" ${pc.activeViruses.length > 0 ? '' : 'disabled'}>Limpar Vírus</button>
+          <div><strong>Avastão 11 Scanner</strong><br/><small>${pc.activeViruses.length} vírus ativo(s)</small></div>
+          <button type="button" class="win-btn ${pc.activeViruses.length > 0 ? 'win-btn-danger' : ''}" data-repair="antivirus" ${pc.activeViruses.length > 0 ? '' : 'disabled'}>Limpar Vírus</button>
         </div>
       </div>
-    `;
-  }
-
-  renderConfig() {
-    const cfg = this.game.aiConfig;
-    const providerMeta = AI_PROVIDERS[cfg.provider] || AI_PROVIDERS.offline;
-    const options = Object.entries(AI_PROVIDERS)
-      .map(
-        ([key, val]) => `<option value="${key}" ${cfg.provider === key ? 'selected' : ''}>${escapeHtml(val.label)}</option>`
-      )
-      .join('');
-
-    this.els.configBody.innerHTML = `
-      <form id="ai-config-form" class="cfg-form">
-        <div class="cfg-notice">
-          Sua chave API fica salva <strong>exclusivamente no localStorage deste navegador</strong>. Nenhuma chave é enviada para servidores do jogo.
-        </div>
-
-        <label class="cfg-field">
-          <span>Motor de IA das Vítimas</span>
-          <select id="cfg-provider" class="input98">${options}</select>
-        </label>
-
-        <label class="cfg-field">
-          <span>Modelo</span>
-          <input id="cfg-model" type="text" class="input98" value="${escapeHtml(cfg.model || providerMeta.defaultModel)}" ${cfg.provider === 'offline' ? 'disabled' : ''} />
-        </label>
-
-        <label class="cfg-field">
-          <span>API Key (armazenada localmente)</span>
-          <input id="cfg-apikey" type="password" class="input98" autocomplete="off" placeholder="${providerMeta.needsKey ? 'Cole sua chave aqui (sk-... / AIza...)' : 'Opcional / Não necessária'}" value="${escapeHtml(cfg.apiKey)}" ${cfg.provider === 'offline' ? 'disabled' : ''} />
-        </label>
-
-        ${
-          cfg.provider === 'custom'
-            ? `<label class="cfg-field">
-                 <span>Endpoint OpenAI-compatible</span>
-                 <input id="cfg-endpoint" type="text" class="input98" value="${escapeHtml(cfg.customEndpoint)}" />
-               </label>`
-            : ''
-        }
-
-        <div class="cfg-row-2">
-          <label class="cfg-field">
-            <span>Voz das Vítimas (TTS)</span>
-            <select id="cfg-tts-mode" class="input98">
-              <option value="browser" ${cfg.ttsMode === 'browser' ? 'selected' : ''}>Voz Local do Dispositivo (Grátis)</option>
-              <option value="openai" ${cfg.ttsMode === 'openai' ? 'selected' : ''}>OpenAI TTS-1 (requer chave OpenAI)</option>
-            </select>
-          </label>
-          <label class="cfg-field">
-            <span>Velocidade da Voz (${cfg.voiceSpeed}x)</span>
-            <input id="cfg-voice-speed" type="range" min="0.75" max="1.4" step="0.05" value="${cfg.voiceSpeed}" />
-          </label>
-        </div>
-
-        <div class="cfg-checks">
-          <label><input id="cfg-voice-enabled" type="checkbox" ${cfg.voiceEnabled ? 'checked' : ''} /> Ouvir voz das vítimas</label>
-          <label><input id="cfg-sfx-enabled" type="checkbox" ${cfg.sfxEnabled ? 'checked' : ''} /> Efeitos sonoros Win98</label>
-        </div>
-
-        <div class="cfg-actions">
-          <button type="submit" class="btn98 btn-primary">Salvar Localmente</button>
-          <button type="button" class="btn98" data-cfg-action="test">Testar Conexão</button>
-          <button type="button" class="btn98 btn-danger" data-cfg-action="clear-key">Apagar Chave</button>
-          <button type="button" class="btn98" data-cfg-action="reset-save">Resetar Save</button>
-        </div>
-        <div id="cfg-test-status" class="status-pill">Provedor atual: ${escapeHtml(providerMeta.label)}</div>
-      </form>
     `;
   }
 
@@ -652,15 +722,15 @@ export class AppRenderer {
         const top = 36 + ((idx * 34) % 140);
         const left = 24 + ((idx * 42) % 180);
         return `
-          <div class="os-window virus-popup" style="top:${top}px;left:${left}px;z-index:90;">
-            <div class="win-titlebar is-virus">
+          <div class="win11-window virus-popup" style="top:${top}px;left:${left}px;z-index:90;">
+            <div class="win11-titlebar is-virus">
               <span>ALERTA: ${escapeHtml(v.source)}</span>
-              <button type="button" class="win-btn" data-close-virus="${v.id}">X</button>
+              <button type="button" class="win-ctrl-btn" data-close-virus="${v.id}">×</button>
             </div>
             <div class="win-body virus-body">
               <p><strong>${escapeHtml(v.title)}</strong></p>
               <p>Esquentando sua CPU! Feche agora ou limpe no PC Doctor.</p>
-              <button type="button" class="btn98 btn-danger" data-close-virus="${v.id}">Fechar Pop-up</button>
+              <button type="button" class="win-btn win-btn-danger" data-close-virus="${v.id}">Fechar Pop-up</button>
             </div>
           </div>
         `;
@@ -671,6 +741,14 @@ export class AppRenderer {
   renderOverlays() {
     const s = this.game.state;
     this.els.bsodOverlay.classList.toggle('is-hidden', !s.pc.isCrashed);
+    this.els.excelOverlay.classList.toggle('is-hidden', !s.panicExcelMode);
+
+    if (s.policeRaid && !s.panicExcelMode) {
+      this.els.raidBanner.classList.remove('is-hidden');
+      this.els.raidCountdown.textContent = `${s.policeRaid.timeLeft}s`;
+    } else {
+      this.els.raidBanner.classList.add('is-hidden');
+    }
 
     const report = s.lastShiftReport;
     this.els.shiftModal.classList.toggle('is-hidden', !report);
@@ -683,7 +761,7 @@ export class AppRenderer {
 
       this.els.shiftModalBody.innerHTML = `
         <div class="boss-header">
-          <canvas id="boss-portrait-canvas" width="32" height="32" class="pixel-canvas victim-portrait"></canvas>
+          <canvas id="boss-portrait-canvas" width="48" height="48" class="pixel-canvas victim-portrait"></canvas>
           <div>
             <div class="boss-name">AVALIAÇÃO DO SR. CARIL — DIA ${report.day}</div>
             <div class="boss-grade">Nota do Turno: <span class="grade-badge">${report.grade}</span></div>
@@ -700,7 +778,7 @@ export class AppRenderer {
           <ul>${quotesHtml}</ul>
         </div>
         <div class="boss-footer">
-          <button type="button" class="btn98 btn-primary" data-action="next-day">
+          <button type="button" class="win-btn win-btn-primary" data-action="next-day">
             ${report.fired ? 'Recomeçar Carreira (Dia 1)' : `Iniciar Dia ${s.day + 1}`}
           </button>
         </div>

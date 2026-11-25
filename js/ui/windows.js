@@ -10,7 +10,7 @@ export class WindowManager {
   }
 
   registerWindows() {
-    const winEls = this.workspaceEl.querySelectorAll('.os-window[data-app-id]');
+    const winEls = this.workspaceEl.querySelectorAll('.win11-window[data-app-id]');
     for (const el of winEls) {
       const id = el.id;
       this.windows.set(id, {
@@ -18,18 +18,26 @@ export class WindowManager {
         appId: el.dataset.appId,
         title: el.dataset.title || id,
         el,
-        minimized: el.classList.contains('is-minimized')
+        minimized: el.classList.contains('is-minimized'),
+        maximized: false
       });
 
       el.addEventListener('pointerdown', () => this.focusWindow(id));
 
-      const minBtn = el.querySelector('[data-win-action="minimize"]');
-      if (minBtn) {
-        minBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.toggleMinimize(id);
-        });
-      }
+      el.querySelector('[data-win-action="minimize"]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleMinimize(id);
+      });
+
+      el.querySelector('[data-win-action="maximize"]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleMaximize(id);
+      });
+
+      el.querySelector('[data-win-action="close"]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleMinimize(id);
+      });
     }
     this.focusWindow(this.activeWindowId);
     this.renderTaskbar();
@@ -88,6 +96,15 @@ export class WindowManager {
     }
   }
 
+  toggleMaximize(id) {
+    if (this.isMobileViewport()) return;
+    const win = this.windows.get(id);
+    if (!win) return;
+    win.maximized = !win.maximized;
+    win.el.classList.toggle('is-maximized', win.maximized);
+    this.focusWindow(id);
+  }
+
   openOrFocus(id) {
     this.focusWindow(id);
   }
@@ -97,7 +114,7 @@ export class WindowManager {
     for (const win of this.windows.values()) {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'task-tab';
+      btn.className = 'task11-tab';
       if (win.id === this.activeWindowId && !win.minimized) {
         btn.classList.add('is-active');
       }
@@ -121,11 +138,11 @@ export class WindowManager {
 
     this.workspaceEl.addEventListener('pointerdown', (e) => {
       if (this.isMobileViewport()) return;
-      const titlebar = e.target.closest('.win-titlebar');
+      const titlebar = e.target.closest('.win11-titlebar');
       if (!titlebar || e.target.closest('button')) return;
 
-      const winEl = titlebar.closest('.os-window');
-      if (!winEl || winEl.classList.contains('virus-popup')) return;
+      const winEl = titlebar.closest('.win11-window');
+      if (!winEl || winEl.classList.contains('virus-popup') || winEl.classList.contains('is-maximized')) return;
 
       this.focusWindow(winEl.id);
       const rect = winEl.getBoundingClientRect();
@@ -143,7 +160,7 @@ export class WindowManager {
       if (!dragging) return;
       const { winEl, offsetX, offsetY, parentRect } = dragging;
       const maxX = Math.max(0, parentRect.width - winEl.offsetWidth);
-      const maxY = Math.max(0, parentRect.height - 42);
+      const maxY = Math.max(0, parentRect.height - 46);
       const nextX = Math.max(0, Math.min(maxX, e.clientX - parentRect.left - offsetX));
       const nextY = Math.max(0, Math.min(maxY, e.clientY - parentRect.top - offsetY));
       winEl.style.left = `${Math.round(nextX)}px`;

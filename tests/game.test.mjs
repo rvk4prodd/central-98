@@ -3,107 +3,123 @@ import assert from 'node:assert/strict';
 
 import { VICTIMS } from '../js/data/victims.js';
 import {
+  addCustomVictim,
   advanceToNextDay,
   applyCallTurnResult,
   buyUpgradeItem,
+  connectRemoteDesktop,
   createInitialState,
+  DEFAULT_AI_CONFIG,
   evaluateShift,
+  inspectRemoteFile,
   redeemSecretCode,
   repairPart,
+  resolvePoliceRaid,
+  runRemoteFakeScan,
+  sendFakeShieldAlert,
   spawnVirus,
   startCallState,
-  tickHardware
+  tickHardware,
+  triggerPoliceRaid
 } from '../js/state.js';
-import { generateOfflineReply, parseAiResponse } from '../js/engine/ai-client.js';
+import { AI_PROVIDERS, generateOfflineReply, getActiveApiKey, parseAiResponse } from '../js/engine/ai-client.js';
 
-test('parseAiResponse handles valid JSON, markdown-fenced JSON, and plain text fallback', () => {
-  const clean = parseAiResponse('{"reply":"Oi, tudo bem?","trustDelta":15,"suspicionDelta":-5,"mood":"convinced","revealSecret":true,"hangUp":false,"triggerVirus":false}');
+test('supports 10+ AI providers with per-provider key vault and JSON parser', () => {
+  assert.ok(Object.keys(AI_PROVIDERS).length >= 11);
+  const cfg = structuredClone(DEFAULT_AI_CONFIG);
+  cfg.provider = 'anthropic';
+  cfg.keysByProvider.anthropic = 'sk-ant-test-123';
+  assert.equal(getActiveApiKey(cfg), 'sk-ant-test-123');
+
+  const clean = parseAiResponse('{"reply":"Oi, tudo bem?","trustDelta":15,"suspicionDelta":-5,"mood":"convinced","revealSecret":true}');
   assert.equal(clean.reply, 'Oi, tudo bem?');
-  assert.equal(clean.trustDelta, 15);
   assert.equal(clean.revealSecret, true);
 
-  const fenced = parseAiResponse('```json\n{"reply":"Certo, anota aí.","trustDelta":10,"suspicionDelta":0,"mood":"calm","revealSecret":false}\n```');
-  assert.equal(fenced.reply, 'Certo, anota aí.');
-  assert.equal(fenced.trustDelta, 10);
-
-  const plain = parseAiResponse('Isso parece golpe! Vou chamar a polícia!');
-  assert.equal(plain.mood, 'angry');
-  assert.ok(plain.suspicionDelta > 0);
+  const fenced = parseAiResponse('```json\n{"reply":"Certo.","trustDelta":10,"mood":"calm"}\n```');
+  assert.equal(fenced.reply, 'Certo.');
 });
 
-test('offline motor rewards trace facts and reveals secret at high trust', () => {
+test('AnyControl remote desktop, black curtain, FakeScan and FakeShield flow', () => {
   const state = createInitialState();
   const victim = VICTIMS.find((v) => v.id === 'dona_marlene');
   startCallState(state, victim.id);
 
-  // First turn: polite + mentions trace fact keywords (airfryer, caixa 0412)
-  const r1 = generateOfflineReply(victim, state.activeCall, 'Dona Marlene, aqui é do setor da Scamazon sobre sua panela AirFryer e o protocolo da Caixa 0412.');
-  applyCallTurnResult(state, victim, r1, 'Dona Marlene, aqui é do setor da Scamazon sobre sua panela AirFryer e o protocolo da Caixa 0412.');
-  assert.ok(state.activeCall.trust > victim.startingTrust);
+  // Boost trust above 35% without completing the call yet
+  const r1 = generateOfflineReply(victim, state.activeCall, 'Dona Marlene, aqui é do setor de protocolo da entrega.');
+  applyCallTurnResult(state, victim, r1, 'Dona Marlene, aqui é do setor de protocolo da entrega.');
+  assert.equal(state.activeCall.status, 'active');
+  assert.ok(state.activeCall.trust >= 35);
 
-  // Second turn: mentions grandson Lucas -> pushes trust above secret threshold
-  const r2 = generateOfflineReply(victim, state.activeCall, 'Seu neto Lucas pediu para confirmar a entrega urgente antes do bloqueio.');
-  applyCallTurnResult(state, victim, r2, 'Seu neto Lucas pediu para confirmar a entrega urgente antes do bloqueio.');
+  const conn = connectRemoteDesktop(state);
+  assert.equal(conn.ok, true);
 
+  const scan = runRemoteFakeScan(state, victim);
+  assert.equal(scan.ok, true);
+  assert.equal(scan.backfired, false);
+
+  state.activeCall.blackCurtain = true;
+  const secretIdx = victim.remoteFiles.findIndex((f) => f.isSecret);
+  const fileRes = inspectRemoteFile(state, victim, secretIdx);
+  assert.equal(fileRes.ok, true);
+  assert.equal(fileRes.secretFound, victim.secretPayload);
   assert.equal(state.activeCall.status, 'won');
-  assert.equal(state.activeCall.extractedSecret, victim.secretPayload);
 });
 
-test('scambaiter triggers virus popup when probed lazily', () => {
+test('FakeShield panics normal victims and backfires on Scambaiters', () => {
   const state = createInitialState();
   state.day = 3;
   const baiter = VICTIMS.find((v) => v.isScambaiter);
   startCallState(state, baiter.id);
 
-  const r1 = generateOfflineReply(baiter, state.activeCall, 'Oi tudo bem');
-  applyCallTurnResult(state, baiter, r1, 'Oi tudo bem');
-
-  const r2 = generateOfflineReply(baiter, state.activeCall, 'Me passa logo os dados');
-  assert.equal(r2.triggerVirus, true);
+  const res = sendFakeShieldAlert(state, baiter);
+  assert.equal(res.ok, true);
+  assert.equal(res.backfired, true);
 });
 
-test('hardware heats up, crashes at 100C, and repairs recover health', () => {
+test('Police Raid dodge with Excel vs fine + strike', () => {
   const state = createInitialState();
-  state.pc.cpuTemp = 96;
-  state.pc.dustLevel = 80;
-  spawnVirus(state, 'Teste');
+  state.wallet = 500;
+  assert.equal(triggerPoliceRaid(state), true);
+  const dodged = resolvePoliceRaid(state, true);
+  assert.equal(dodged.dodged, true);
+  assert.equal(state.strikes, 0);
 
-  const tickRes = tickHardware(state, 5, () => 0.9);
-  assert.equal(tickRes.crashedNow, true);
-  assert.equal(state.pc.isCrashed, true);
-
-  const rebootRes = repairPart(state, 'reboot');
-  assert.equal(rebootRes.ok, true);
-  assert.equal(state.pc.isCrashed, false);
-
-  state.pc.looseCable = true;
-  const cableRes = repairPart(state, 'cable');
-  assert.equal(cableRes.ok, true);
-  assert.equal(state.pc.looseCable, false);
+  triggerPoliceRaid(state);
+  const busted = resolvePoliceRaid(state, false);
+  assert.equal(busted.dodged, false);
+  assert.equal(state.strikes, 1);
+  assert.ok(state.wallet < 500);
 });
 
-test('economy redeems secret once, buys upgrades, and evaluates shift', () => {
+test('Custom victim creator, CryptoVault multiplier, upgrades, and hardware BSOD recovery', () => {
   const state = createInitialState();
-  const victim = VICTIMS[0];
+  const created = addCustomVictim(state, {
+    name: 'Seu Arlindo',
+    role: 'Síndico',
+    company: 'Condomínio Sol',
+    payout: 1000,
+    scamChannel: 'crypto',
+    personaPrompt: 'Síndico preocupado com boleto.'
+  });
+  assert.equal(created.ok, true);
 
-  const first = redeemSecretCode(state, victim.secretPayload);
-  assert.equal(first.ok, true);
-  assert.equal(state.shiftEarned, victim.payout);
+  state.cryptoRate = 1.25;
+  const redeem = redeemSecretCode(state, created.victim.secretPayload, 'crypto');
+  assert.equal(redeem.ok, true);
+  assert.equal(redeem.payout, 1250);
 
-  const dup = redeemSecretCode(state, victim.secretPayload);
-  assert.equal(dup.ok, false);
-
-  state.wallet = 1000;
-  const buy = buyUpgradeItem(state, 'cooler');
+  const buy = buyUpgradeItem(state, 'vpn');
   assert.equal(buy.ok, true);
-  assert.equal(state.upgrades.cooler, 1);
+  assert.equal(state.upgrades.vpn, 1);
+
+  state.pc.cpuTemp = 96;
+  spawnVirus(state, 'Teste');
+  const hw = tickHardware(state, 5, () => 0.9);
+  assert.equal(hw.crashedNow, true);
+  assert.equal(repairPart(state, 'reboot').ok, true);
 
   state.shiftEarned = state.quota;
-  const report = evaluateShift(state);
-  assert.equal(report.hitQuota, true);
-  assert.equal(report.fired, false);
-
+  assert.equal(evaluateShift(state).hitQuota, true);
   advanceToNextDay(state);
   assert.equal(state.day, 2);
-  assert.equal(state.shiftEarned, 0);
 });

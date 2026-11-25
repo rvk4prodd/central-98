@@ -1,12 +1,12 @@
 {
-  "name": "CENTRAL 98 — Call Center Simulator",
-  "short_name": "CENTRAL 98",
-  "description": "Simulador 2D satírico de call center golpista com IA local/BYOK, voz sintetizada e manutenção de PC.",
+  "name": "CENTRAL 11 — Call Center Simulator",
+  "short_name": "CENTRAL 11",
+  "description": "Simulador 2D satírico estilo Windows 11 inspirado em Scam With Your Friends com multi-IA local e vozes neurais.",
   "start_url": "./index.html",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#006d6f",
-  "theme_color": "#0b3d91",
+  "background_color": "#0b1528",
+  "theme_color": "#0078d4",
   "lang": "pt-BR",
   "icons": [
     {

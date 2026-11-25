@@ -1,11 +1,14 @@
-import { VICTIMS } from '../data/victims.js';
 import {
+  addCustomVictim,
   advanceToNextDay,
   applyCallTurnResult,
   buyUpgradeItem,
   clamp,
+  connectRemoteDesktop,
   createInitialState,
   evaluateShift,
+  findVictimById,
+  inspectRemoteFile,
   loadAiConfig,
   loadSavedState,
   persistAiConfig,
@@ -13,9 +16,13 @@ import {
   redeemSecretCode,
   removeVirus,
   repairPart,
+  resolvePoliceRaid,
+  runRemoteFakeScan,
+  sendFakeShieldAlert,
   spawnVirus,
   startCallState,
-  tickHardware
+  tickHardware,
+  triggerPoliceRaid
 } from '../state.js';
 import { requestVictimReply, testProviderConnection } from './ai-client.js';
 import { soundEngine } from './audio.js';
@@ -53,6 +60,7 @@ export class CentralGame {
   notify(msg, isError = false) {
     this.lastToast = msg;
     if (isError) soundEngine.playError();
+    else soundEngine.playNotify();
     this.emit('toast');
   }
 
@@ -71,11 +79,17 @@ export class CentralGame {
   onSecondTick() {
     if (this.state.gameOver || this.state.lastShiftReport) return;
 
+    // Gentle crypto market oscillation every 6 seconds
+    if (this.state.shiftTimeLeft % 6 === 0) {
+      const delta = (Math.random() - 0.48) * 0.06;
+      this.state.cryptoRate = Number(clamp(this.state.cryptoRate + delta, 0.9, 1.32).toFixed(2));
+    }
+
     const hw = tickHardware(this.state, 1);
     if (hw.faultOccurred === 'looseCable') {
-      this.notify('Alerta de Hardware: Cabo de força soltou dentro do gabinete!', true);
+      this.notify('Alerta de Hardware: Cabo SATA soltou no gabinete!', true);
     } else if (hw.faultOccurred === 'burntCap') {
-      this.notify('Cheiro de queimado: Um capacitor estufou no PC Doctor!', true);
+      this.notify('Capacitor estufou no PC Doctor!', true);
     }
     if (hw.crashedNow) {
       soundEngine.playError();
@@ -88,8 +102,25 @@ export class CentralGame {
     }
 
     if (!this.state.pc.isCrashed) {
-      // Shift clock ticks down while working
       this.state.shiftTimeLeft = Math.max(0, this.state.shiftTimeLeft - 1);
+
+      // Police Raid countdown & trigger
+      if (this.state.policeRaid) {
+        this.state.policeRaid.timeLeft -= 1;
+        if (this.state.policeRaid.timeLeft <= 0) {
+          const res = resolvePoliceRaid(this.state, this.state.panicExcelMode);
+          this.notify(res.message, !res.dodged);
+          if (this.state.strikes >= this.state.maxStrikes) {
+            this.finishShift();
+            return;
+          }
+        }
+      } else if (this.state.policeHeat >= 82 && !this.state.panicExcelMode) {
+        if (triggerPoliceRaid(this.state)) {
+          soundEngine.playPoliceSiren();
+          this.notify('BATIDA POLICIAL! Ative o Modo Excel (Pânico) agora!', true);
+        }
+      }
 
       const call = this.state.activeCall;
       if (call && call.status === 'active') {
@@ -100,7 +131,7 @@ export class CentralGame {
             call.status = 'lost';
             call.messages.push({
               role: 'victim',
-              text: 'Olha, cansei de esperar e perdi a paciência. Tchau!',
+              text: 'Cansei de esperar, perdi a paciência. Tchau!',
               mood: 'angry',
               timestamp: Date.now()
             });
@@ -140,11 +171,11 @@ export class CentralGame {
 
   getActiveVictim() {
     if (!this.state.activeCall) return null;
-    return VICTIMS.find((v) => v.id === this.state.activeCall.victimId) || null;
+    return findVictimById(this.state, this.state.activeCall.victimId);
   }
 
   syncOperatorMood() {
-    if (this.state.pc.isCrashed || this.state.pc.activeViruses.length > 0) {
+    if (this.state.pc.isCrashed || this.state.pc.activeViruses.length > 0 || this.state.policeRaid) {
       this.operatorMode = 'panicking';
     } else if (this.isSpeaking) {
       this.operatorMode = 'talking';
@@ -164,7 +195,7 @@ export class CentralGame {
 
   dialVictim(victimId) {
     if (this.state.pc.isCrashed) {
-      this.notify('PC travado em Tela Azul! Reinicie no PC Doctor.', true);
+      this.notify('PC em Tela Azul! Reinicie no PC Doctor.', true);
       return;
     }
     const call = startCallState(this.state, victimId);
@@ -182,7 +213,7 @@ export class CentralGame {
       if (this.state.activeCall?.victimId === victimId) {
         soundEngine.speakVictim(victim.openingLine, victim.voiceProfile);
       }
-    }, 520);
+    }, 450);
   }
 
   hangUpCall() {
@@ -204,7 +235,7 @@ export class CentralGame {
     if (!call || call.status !== 'active') return;
     call.onHold = !call.onHold;
     soundEngine.toggleHoldMusic(call.onHold);
-    this.notify(call.onHold ? 'Chamada em espera (música lo-fi ligada).' : 'Chamada retomada.');
+    this.notify(call.onHold ? 'Chamada em espera.' : 'Chamada retomada.');
     this.emit();
   }
 
@@ -214,13 +245,103 @@ export class CentralGame {
       this.notify('Inicie uma ligação primeiro para rastrear no GeoTrace.', true);
       return;
     }
-    if (call.traceProgress >= 100) {
-      this.notify('Rastreamento já está 100% completo.');
-      return;
-    }
+    if (call.traceProgress >= 100) return;
     call.isTracing = !call.isTracing;
     soundEngine.playClick();
     this.emit();
+  }
+
+  connectAnyControl() {
+    const res = connectRemoteDesktop(this.state);
+    if (!res.ok) {
+      this.notify(res.reason, true);
+    } else {
+      soundEngine.playRemoteConnect();
+      this.notify(res.message);
+    }
+    this.emit();
+    return res;
+  }
+
+  toggleBlackCurtain() {
+    const call = this.state.activeCall;
+    if (!call || !call.remoteConnected) return;
+    call.blackCurtain = !call.blackCurtain;
+    soundEngine.playClick();
+    this.notify(call.blackCurtain ? 'Tela Preta ativada na vítima (modo invisível).' : 'Tela da vítima visível novamente.');
+    this.emit();
+  }
+
+  openRemoteFile(fileIdx) {
+    const victim = this.getActiveVictim();
+    const res = inspectRemoteFile(this.state, victim, fileIdx);
+    if (!res.ok) {
+      this.notify(res.reason, true);
+    } else if (res.secretFound) {
+      soundEngine.playCash();
+      this.notify(`Arquivo secreto extraído via AnyControl: ${res.secretFound}!`);
+    } else {
+      soundEngine.playRemoteConnect();
+      this.notify(`Lido: ${res.file.label}`);
+    }
+    persistState(this.state);
+    this.emit();
+    return res;
+  }
+
+  runRemoteFakeScan() {
+    const victim = this.getActiveVictim();
+    const res = runRemoteFakeScan(this.state, victim);
+    if (!res.ok) {
+      this.notify(res.reason, true);
+    } else {
+      soundEngine.playFakeScan();
+      this.notify(res.message, res.backfired);
+    }
+    this.emit();
+    return res;
+  }
+
+  deployFakeShield() {
+    const victim = this.getActiveVictim();
+    const res = sendFakeShieldAlert(this.state, victim);
+    if (!res.ok) {
+      this.notify(res.reason, true);
+    } else {
+      soundEngine.playFakeScan();
+      this.notify(res.message, res.backfired);
+    }
+    this.emit();
+    return res;
+  }
+
+  togglePanicExcel() {
+    this.state.panicExcelMode = !this.state.panicExcelMode;
+    soundEngine.playClick();
+    if (this.state.panicExcelMode && this.state.policeRaid) {
+      const res = resolvePoliceRaid(this.state, true);
+      this.notify(res.message);
+    }
+    this.emit();
+  }
+
+  createCustomVictim(payload) {
+    const res = addCustomVictim(this.state, payload);
+    if (!res.ok) {
+      this.notify(res.reason, true);
+    } else {
+      soundEngine.playCash();
+      this.notify(`Alvo "${res.victim.name}" adicionado ao discador!`);
+      persistState(this.state);
+    }
+    this.emit();
+    return res;
+  }
+
+  updateOperatorLook(partial) {
+    this.state.operatorLook = { ...this.state.operatorLook, ...partial };
+    persistState(this.state);
+    this.emit('config');
   }
 
   async sendPlayerMessage(rawText) {
@@ -249,7 +370,7 @@ export class CentralGame {
       this.notify(`ATAQUE DE SCAMBAITER! ${victim.name} disparou um pop-up de vírus!`, true);
     } else if (call.status === 'won') {
       soundEngine.playCash();
-      this.notify(`Código obtido! Copie e resgate na Scamazon: ${call.extractedSecret}`);
+      this.notify(`Código obtido! Resgate na Scamazon: ${call.extractedSecret}`);
     } else if (call.status === 'lost') {
       soundEngine.stopLineHum();
       soundEngine.playError();
@@ -257,7 +378,7 @@ export class CentralGame {
     }
 
     if (aiResult.warning) {
-      this.notify(`IA em fallback local (${aiResult.warning})`);
+      this.notify(`Fallback local (${aiResult.warning})`);
     }
 
     this.syncOperatorMood();
@@ -280,14 +401,14 @@ export class CentralGame {
     }
   }
 
-  redeemCode(code) {
-    const result = redeemSecretCode(this.state, code);
+  redeemCode(code, channel = 'giftcard') {
+    const result = redeemSecretCode(this.state, code, channel);
     if (!result.ok) {
       this.notify(result.reason, true);
       return result;
     }
     soundEngine.playCash();
-    this.notify(`+R$ ${result.payout} na conta! Meta do turno atualizada.`);
+    this.notify(`+R$ ${result.payout} resgatados (${channel.toUpperCase()})!`);
     persistState(this.state);
     this.emit('cash');
     return result;
@@ -334,11 +455,8 @@ export class CentralGame {
     soundEngine.stopLineHum();
     soundEngine.toggleHoldMusic(false);
     const report = evaluateShift(this.state);
-    if (report.hitQuota) {
-      soundEngine.playCash();
-    } else {
-      soundEngine.playError();
-    }
+    if (report.hitQuota) soundEngine.playCash();
+    else soundEngine.playError();
     persistState(this.state);
     this.emit('shift-end');
   }
@@ -364,15 +482,25 @@ export class CentralGame {
   }
 
   updateAiConfig(partial) {
-    this.aiConfig = { ...this.aiConfig, ...partial };
+    this.aiConfig = {
+      ...this.aiConfig,
+      ...partial,
+      keysByProvider: {
+        ...this.aiConfig.keysByProvider,
+        ...(partial.keysByProvider || {})
+      }
+    };
     persistAiConfig(this.aiConfig);
     soundEngine.syncSettings(this.aiConfig);
     this.emit('config');
   }
 
-  clearApiKey() {
-    this.updateAiConfig({ apiKey: '', provider: 'offline', ttsMode: 'browser' });
-    this.notify('Chave removida do navegador. Motor local ativo.');
+  clearCurrentProviderKey() {
+    const p = this.aiConfig.provider;
+    this.updateAiConfig({
+      keysByProvider: { [p]: '' }
+    });
+    this.notify(`Chave de ${p} removida do armazenamento local.`);
   }
 
   async testAiConnection() {

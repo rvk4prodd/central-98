@@ -1,9 +1,9 @@
-const CACHE_NAME = 'central98-shell-v3';
+const CACHE_NAME = 'central11-shell-v4';
 const SHELL_ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './css/os98.css',
+  './css/win11.css',
   './js/main.js',
   './js/state.js',
   './js/data/victims.js',
@@ -14,6 +14,7 @@ const SHELL_ASSETS = [
   './js/engine/game.js',
   './js/ui/windows.js',
   './js/ui/apps.js',
+  './js/ui/config-ui.js',
   './assets/icon-192.png',
   './assets/icon-512.png'
 ];
@@ -44,11 +45,9 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) {
-    // External AI/TTS API requests stay network-only
     return;
   }
 
-  // Network-first for shell assets so updates apply immediately, falling back to cache offline
   event.respondWith(
     fetch(request)
       .then((response) => {

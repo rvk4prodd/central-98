@@ -17,17 +17,14 @@ function bootstrap() {
   const opRenderer = new OperatorCamRenderer(opCanvas);
   let globeRenderer = null;
 
-  // Desktop shortcut clicks
   document.getElementById('desktop-icons')?.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-open-win]');
     if (!btn) return;
     winMgr.openOrFocus(btn.dataset.openWin);
   });
 
-  // Start button toggles PC Doctor or cycles quick menu
   document.getElementById('start-btn')?.addEventListener('click', () => {
-    const menu = document.getElementById('start-menu');
-    menu?.classList.toggle('is-hidden');
+    document.getElementById('start-menu')?.classList.toggle('is-hidden');
   });
 
   document.getElementById('start-menu')?.addEventListener('click', (e) => {
@@ -37,16 +34,21 @@ function bootstrap() {
     document.getElementById('start-menu')?.classList.add('is-hidden');
   });
 
-  // Boot splash dismissal
+  // Refresh browser neural voices list when voices finish loading asynchronously
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.onvoiceschanged = () => {
+      apps.configUi.render();
+    };
+  }
+
   const bootSplash = document.getElementById('boot-splash');
   document.getElementById('boot-skip-btn')?.addEventListener('click', () => {
     bootSplash?.classList.add('is-hidden');
   });
   setTimeout(() => {
     bootSplash?.classList.add('is-hidden');
-  }, 1100);
+  }, 1000);
 
-  // Subscribe UI to game state updates
   game.subscribe((_, eventType) => {
     apps.renderAll(eventType);
   });
@@ -54,7 +56,6 @@ function bootstrap() {
   apps.renderAll('update');
   game.startLoop();
 
-  // Lightweight Canvas2D animation loop (<= 20 FPS for crisp retro pixel art & low CPU)
   let lastFrame = 0;
   function animateCanvases(ts) {
     if (ts - lastFrame >= 50) {

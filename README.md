@@ -1,23 +1,25 @@
-# CENTRAL 98
+# CENTRAL 11
 
-Simulador 2D satírico de call center em estilo **Windows 98 / CRT**, inspirado em *Scam With Your Friends*, com personagem animado em `Canvas2D` pixel art no canto da tela, sistema de voz, manutenção de PC e suporte a IA local ou BYOK (API Key salva apenas no `localStorage` do navegador).
+Simulador 2D satírico de call center golpista com visual **Windows 11 Fluent / Mica**, inspirado em *Scam With Your Friends*, com câmera animada do operador 2D no canto, acesso remoto simulado, ataques de Scambaiter, batidas policiais, suporte a **10+ APIs de IA** (100% no `localStorage`) e **vozes neurais** (ElevenLabs, OpenAI `gpt-4o-mini-tts`, TTS local e vozes naturais PT-BR do navegador).
 
-## Recursos
+## Funcionalidades
 
-- **Fone98:** Ligações com alvos e empresas em PT-BR (incluindo Scambaiters que atacam seu PC), medidores de Confiança/Suspeita/Paciência, entrada por texto ou microfone (`SpeechRecognition`) e voz sintetizada (`speechSynthesis` local ou OpenAI TTS opcional).
-- **GeoTrace:** Radar/globo wireframe 2D que rastreia fatos ocultos da vítima para usar na conversa.
-- **Scamazon:** Resgate de códigos/senhas/PIX extraídos e loja de upgrades (Cooler, Headset, Fibra Pirata, Avastão 98, Planilha VIP, Cafeteira).
-- **PC Doctor:** Telemetria de temperatura/poeira/saúde, limpeza de cooler, troca de capacitor, cabo solto, remoção de pop-ups de vírus e recuperação de Tela Azul (BSOD).
-- **Config IA (100% Local):** Funciona offline com motor contextual próprio ou conectado via API Key local (OpenRouter, Gemini, Groq, OpenAI ou endpoint local como Ollama).
-- **PWA Mobile:** Instalável na tela inicial do celular via navegador (Android/iOS).
+- **PhoneLink VoIP:** Discador com 9 alvos/empresas (incluindo Scambaiters) + **Criador de Alvos Customizados**, voz em PT-BR, entrada por texto ou microfone (`SpeechRecognition`) e soundboard.
+- **AnyControl (Acesso Remoto):** Conecte no PC da vítima, ative a **Tela Preta** para ela não ver seus cliques, rode o **FakeScan** e abra arquivos secretos.
+- **GeoTrace Pro:** Globo radar 2D que desbloqueia fatos da vítima em tempo real para usar na conversa.
+- **FakeShield AV:** Dispare alertas falsos de vírus para pressionar o alvo.
+- **Scamazon & CryptoVault:** Resgate Gift Cards, PIX bancário ou Crypto (com cotação dinâmica) e compre 8 upgrades de setup/escritório.
+- **Batida Policial + Modo Excel:** Quando o calor policial sobe, ative a planilha contábil falsa antes da contagem zerar.
+- **PC Doctor 11:** Limpe poeira do cooler, encaixe cabo SATA, troque capacitor, remova vírus e reinicie Tela Azul (BSOD).
+- **Configurações (100% Local):** Cofre de chaves separado para OpenRouter, Gemini, Groq, OpenAI, Anthropic Claude, DeepSeek, xAI Grok, Mistral, Together AI e Ollama/LM Studio, além de customizador do personagem 2D e motor de voz neural com filtro telefônico.
 
 ## Rodar localmente
 
 ```powershell
-python -m http.server 4188 --bind 127.0.0.1
+python -m http.server 4189 --bind 127.0.0.1
 ```
 
-Abra `http://127.0.0.1:4188/` no navegador.
+Abra `http://127.0.0.1:4189/` no navegador.
 
 ## Testes
 
