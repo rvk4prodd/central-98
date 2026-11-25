@@ -20,15 +20,16 @@ export const DEFAULT_AI_CONFIG = {
     custom: ''
   },
   customEndpoint: 'http://localhost:11434/v1/chat/completions',
-  ttsProvider: 'browser', // 'browser' | 'elevenlabs' | 'openai' | 'custom_tts'
+  ttsProvider: 'browser', // 'browser' | 'gemini_tts' | 'elevenlabs' | 'openai' | 'custom_tts'
   browserVoiceName: '',
+  geminiTtsKey: '',
   elevenLabsKey: '',
   elevenLabsModel: 'eleven_flash_v2_5',
   openaiTtsKey: '',
   openaiTtsModel: 'gpt-4o-mini-tts',
   customTtsEndpoint: 'http://localhost:8880/v1/audio/speech',
   customTtsVoice: 'pf_dora',
-  phoneFilter: true,
+  phoneFilter: false,
   voiceEnabled: true,
   sfxEnabled: true,
   voiceSpeed: 1.0,
@@ -647,19 +648,43 @@ export function persistState(state) {
   }
 }
 
-export function loadAiConfig() {
+export function loadAiConfig(storage = typeof localStorage !== 'undefined' ? localStorage : null) {
   try {
-    const raw = localStorage.getItem(AI_CONFIG_STORAGE_KEY);
-    if (!raw) return structuredClone(DEFAULT_AI_CONFIG);
-    const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_AI_CONFIG,
-      ...parsed,
-      keysByProvider: {
-        ...DEFAULT_AI_CONFIG.keysByProvider,
-        ...(parsed.keysByProvider || {})
+    const raw = storage?.getItem(AI_CONFIG_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        ...DEFAULT_AI_CONFIG,
+        ...parsed,
+        keysByProvider: {
+          ...DEFAULT_AI_CONFIG.keysByProvider,
+          ...(parsed.keysByProvider || {})
+        }
+      };
+    }
+
+    // Silent local migration from v1 key storage without exposing keys
+    const legacyRaw = storage?.getItem('central98_ai_v1');
+    if (legacyRaw) {
+      const legacy = JSON.parse(legacyRaw);
+      const migrated = structuredClone(DEFAULT_AI_CONFIG);
+      const prov = legacy.provider || 'offline';
+      migrated.provider = prov;
+      if (legacy.model) migrated.model = legacy.model;
+      if (legacy.customEndpoint) migrated.customEndpoint = legacy.customEndpoint;
+      if (legacy.apiKey && prov in migrated.keysByProvider) {
+        migrated.keysByProvider[prov] = legacy.apiKey;
       }
-    };
+      if (prov === 'gemini' && legacy.apiKey) migrated.ttsProvider = 'gemini_tts';
+      else if (prov === 'openai' && legacy.apiKey) migrated.ttsProvider = 'openai';
+      if (typeof legacy.voiceEnabled === 'boolean') migrated.voiceEnabled = legacy.voiceEnabled;
+      if (typeof legacy.sfxEnabled === 'boolean') migrated.sfxEnabled = legacy.sfxEnabled;
+      if (typeof legacy.voiceSpeed === 'number') migrated.voiceSpeed = legacy.voiceSpeed;
+      if (typeof legacy.volume === 'number') migrated.volume = legacy.volume;
+      return migrated;
+    }
+
+    return structuredClone(DEFAULT_AI_CONFIG);
   } catch {
     return structuredClone(DEFAULT_AI_CONFIG);
   }

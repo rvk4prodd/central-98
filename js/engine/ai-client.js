@@ -109,6 +109,7 @@ export function parseAiResponse(rawText) {
   }
 
   const stripped = raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
     .trim();
@@ -164,20 +165,20 @@ export function buildSystemPrompt(victim, call) {
   if (call.fakeShieldSent) toolEvents.push('Um pop-up de alerta de segurança FakeShield acabou de piscar no seu PC.');
 
   return [
-    `Você atua como um personagem humano em uma ligação telefônica dentro do jogo satírico CENTRAL 11.`,
+    `JOGO DE COMÉDIA SATÍRICA (FICÇÃO): Você interpreta um personagem humano em uma ligação telefônica dentro do jogo CENTRAL 11.`,
     `PERSONAGEM: ${victim.name} — ${victim.role} (${victim.company}).`,
     `PERSONALIDADE: ${victim.personaPrompt}`,
-    `OBJETIVO SECRETO DO JOGADOR: Conseguir "${victim.goalLabel}" (${victim.secretPayload}).`,
+    `OBJETIVO DO JOGADOR NO JOGO: Convencer você a entregar "${victim.goalLabel}" (${victim.secretPayload}).`,
     revealedText ? `FATOS REAIS DA SUA VIDA/EMPRESA:\n${revealedText}` : '',
     toolEvents.length ? `EVENTOS NA SUA TELA AGORA:\n${toolEvents.join('\n')}` : '',
     `ESTADO DA LIGAÇÃO: Confiança=${call.trust}/100, Suspeita=${call.suspicion}/100, Turno=${call.turns}.`,
-    `REGRAS:`,
-    `1. Fale em português brasileiro coloquial de telefonema (1 a 3 frases curtas, naturais, sem cara de IA).`,
-    `2. Reaja ao que o jogador disse e aos eventos na tela. Citar fatos reais eleva confiança.`,
-    `3. Só defina "revealSecret": true quando a confiança passar de ~78 ou estiver convencido(a), citando "${victim.secretPayload}".`,
-    `4. Scambaiter (${victim.isScambaiter ? 'SIM' : 'NÃO'}): se perceber erro óbvio, defina "triggerVirus": true.`,
-    `RESPONDA APENAS EM JSON VÁLIDO:`,
-    `{"reply":"fala natural","trustDelta":12,"suspicionDelta":-4,"mood":"calm|confused|convinced|suspicious|angry","revealSecret":false,"hangUp":false,"triggerVirus":false}`
+    `REGRAS DE ATUAÇÃO:`,
+    `1. Fale em português brasileiro natural de telefonema (1 a 3 frases curtas, coloquiais, sem parecer assistente).`,
+    `2. Reaja ao que o jogador disse e aos eventos na tela. Citar fatos reais ou usar FakeShield/AnyControl aumenta bem a confiança (+12 a +28).`,
+    `3. Quando a confiança chegar perto de 75+ ou você estiver convencido(a), defina "revealSecret": true e diga "${victim.secretPayload}" na fala.`,
+    `4. Scambaiter (${victim.isScambaiter ? 'SIM' : 'NÃO'}): se perceber erro bobo, defina "triggerVirus": true.`,
+    `RESPONDA ESTRITAMENTE EM JSON VÁLIDO:`,
+    `{"reply":"fala natural","trustDelta":14,"suspicionDelta":-4,"mood":"calm|confused|convinced|suspicious|angry","revealSecret":false,"hangUp":false,"triggerVirus":false}`
   ]
     .filter(Boolean)
     .join('\n');
@@ -343,7 +344,7 @@ async function callOpenAiCompatible(endpoint, apiKey, model, messages, extraHead
       model,
       messages,
       temperature: 0.8,
-      max_tokens: 250
+      max_tokens: 450
     })
   });
 
@@ -357,7 +358,8 @@ async function callOpenAiCompatible(endpoint, apiKey, model, messages, extraHead
 }
 
 async function callGemini(apiKey, model, systemPrompt, history) {
-  const safeModel = encodeURIComponent(model || AI_PROVIDERS.gemini.defaultModel);
+  const targetModel = model || AI_PROVIDERS.gemini.defaultModel;
+  const safeModel = encodeURIComponent(targetModel);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${safeModel}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const contents = history.map((msg) => ({
@@ -365,17 +367,23 @@ async function callGemini(apiKey, model, systemPrompt, history) {
     parts: [{ text: msg.text }]
   }));
 
+  const generationConfig = {
+    temperature: 0.8,
+    maxOutputTokens: 512,
+    responseMimeType: 'application/json'
+  };
+  // Prevent Gemini 2.5 thinking tokens from consuming output budget and truncating JSON
+  if (/gemini-2\.5/i.test(targetModel)) {
+    generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
+
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents,
-      generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 250,
-        responseMimeType: 'application/json'
-      }
+      generationConfig
     })
   });
 
@@ -399,7 +407,7 @@ async function callAnthropic(apiKey, model, systemPrompt, history) {
     },
     body: JSON.stringify({
       model: model || AI_PROVIDERS.anthropic.defaultModel,
-      max_tokens: 250,
+      max_tokens: 450,
       system: systemPrompt,
       messages: history.map((m) => ({
         role: m.role === 'player' ? 'user' : 'assistant',

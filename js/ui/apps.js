@@ -244,6 +244,46 @@ export class AppRenderer {
   }
 
   renderAll(eventType = 'update') {
+    if (eventType === 'toast') {
+      if (this.game.lastToast) {
+        this.els.toastBar.textContent = this.game.lastToast;
+      }
+      return;
+    }
+
+    if (eventType === 'speaking') {
+      this.renderHud();
+      const wave = document.querySelector('.voice-wave');
+      const statusTxt = document.getElementById('voice-status-text');
+      const call = this.game.state.activeCall;
+      const victim = this.game.getActiveVictim();
+      if (wave) wave.classList.toggle('is-active', this.game.isSpeaking);
+      if (statusTxt && call) {
+        statusTxt.textContent = this.game.isSpeaking
+          ? 'Falando na linha...'
+          : call.onHold
+            ? 'Em espera'
+            : 'Linha conectada';
+      }
+      const portraitCanvas = document.getElementById('victim-portrait-canvas');
+      if (portraitCanvas && victim && call) {
+        const lastVictimMsg = [...call.messages].reverse().find((m) => m.role === 'victim');
+        drawVictimPortrait(portraitCanvas, victim, lastVictimMsg?.mood || 'calm', this.game.isSpeaking);
+      }
+      return;
+    }
+
+    if (eventType === 'tick') {
+      this.renderHud();
+      this.updateLiveMetersInPlace();
+      const s = this.game.state;
+      if (s.policeRaid && !s.panicExcelMode) {
+        this.els.raidBanner.classList.remove('is-hidden');
+        this.els.raidCountdown.textContent = `${s.policeRaid.timeLeft}s`;
+      }
+      return;
+    }
+
     this.renderHud();
     this.renderPhone(eventType);
     this.renderRemote();
@@ -256,6 +296,49 @@ export class AppRenderer {
     }
     this.renderViruses();
     this.renderOverlays();
+  }
+
+  updateLiveMetersInPlace() {
+    const s = this.game.state;
+    const call = s.activeCall;
+    if (call && call.status === 'active') {
+      const patienceFill = document.getElementById('meter-patience-fill');
+      const patienceText = document.getElementById('meter-patience-text');
+      if (patienceFill && patienceText) {
+        const pct = Math.round((call.patience / call.maxPatience) * 100);
+        patienceFill.style.width = `${pct}%`;
+        patienceText.textContent = `${call.patience}s`;
+      }
+      const traceFill = document.getElementById('trace-progress-fill');
+      const traceText = document.getElementById('trace-progress-text');
+      if (traceFill && traceText) {
+        traceFill.style.width = `${call.traceProgress}%`;
+        traceText.textContent = `${Math.round(call.traceProgress)}%`;
+      }
+    }
+
+    const pc = s.pc;
+    const tempFill = document.getElementById('doc-temp-fill');
+    const tempText = document.getElementById('doc-temp-text');
+    const healthFill = document.getElementById('doc-health-fill');
+    const healthText = document.getElementById('doc-health-text');
+    const dustFill = document.getElementById('doc-dust-fill');
+    const dustText = document.getElementById('doc-dust-text');
+    if (tempFill && tempText) {
+      const tempPct = Math.round(((pc.cpuTemp - 35) / 65) * 100);
+      tempFill.style.width = `${Math.min(100, Math.max(5, tempPct))}%`;
+      tempFill.classList.toggle('is-suspicion', pc.cpuTemp >= 80);
+      tempFill.classList.toggle('is-trust', pc.cpuTemp < 80);
+      tempText.textContent = `${Math.round(pc.cpuTemp)}°C`;
+    }
+    if (healthFill && healthText) {
+      healthFill.style.width = `${Math.round(pc.pcHealth)}%`;
+      healthText.textContent = `${Math.round(pc.pcHealth)}%`;
+    }
+    if (dustFill && dustText) {
+      dustFill.style.width = `${Math.round(pc.dustLevel)}%`;
+      dustText.textContent = `${Math.round(pc.dustLevel)}%`;
+    }
   }
 
   renderHud() {
@@ -417,16 +500,16 @@ export class AppRenderer {
         <canvas id="victim-portrait-canvas" width="48" height="48" class="pixel-canvas victim-portrait"></canvas>
         <div class="call-id">
           <div class="call-name">${escapeHtml(victim.name)} <small>(${escapeHtml(victim.phone)})</small></div>
-          <div class="call-goal">${escapeHtml(victim.goalLabel)} • R$ ${victim.payout}</div>
+          <div class="call-goal">${escapeHtml(victim.goalLabel)} • R$ ${victim.payout} ${call.lastSource ? `<span class="tag">${escapeHtml(call.lastSource)}</span>` : ''}</div>
           <div class="voice-wave ${this.game.isSpeaking ? 'is-active' : ''}">
             <span></span><span></span><span></span><span></span><span></span>
-            <small>${this.game.isSpeaking ? 'Falando na linha...' : call.onHold ? 'Em espera' : 'Linha conectada'}</small>
+            <small id="voice-status-text">${this.game.isSpeaking ? 'Falando na linha...' : call.onHold ? 'Em espera' : 'Linha conectada'}</small>
           </div>
         </div>
         <div class="call-actions-top">
           <button type="button" class="win-btn" data-action="replay">Ouvir</button>
           <button type="button" class="win-btn ${call.onHold ? 'is-pressed' : ''}" data-action="hold">${call.onHold ? 'Retomar' : 'Espera'}</button>
-          <button type="button" class="win-btn win-btn-danger" data-action="hangup">${call.status === 'active' ? 'Desligar' : 'Voltar'}</button>
+          <button type="button" class="win-btn win-btn-danger" data-action="hangup">${call.status === 'active' ? 'Desligar' : 'Voltar ao Discador'}</button>
         </div>
       </div>
 
@@ -585,8 +668,8 @@ export class AppRenderer {
           <div><strong>Empresa:</strong> ${escapeHtml(victim.company)}</div>
           <div class="meter-row">
             <label>Progresso</label>
-            <div class="meter-track"><div class="meter-fill is-trust" style="width:${call.traceProgress}%"></div></div>
-            <span>${Math.round(call.traceProgress)}%</span>
+            <div class="meter-track"><div id="trace-progress-fill" class="meter-fill is-trust" style="width:${call.traceProgress}%"></div></div>
+            <span id="trace-progress-text">${Math.round(call.traceProgress)}%</span>
           </div>
           <button type="button" class="win-btn win-btn-primary" data-action="toggle-trace" ${call.traceProgress >= 100 || call.status !== 'active' ? 'disabled' : ''}>
             ${call.traceProgress >= 100 ? 'Dossiê 100%' : call.isTracing ? 'Pausar Rastreio' : 'Iniciar GeoTrace'}
@@ -679,18 +762,18 @@ export class AppRenderer {
       <div class="doctor-stats">
         <div class="meter-row">
           <label>Temp CPU</label>
-          <div class="meter-track"><div class="meter-fill ${pc.cpuTemp >= 80 ? 'is-suspicion' : 'is-trust'}" style="width:${Math.min(100, Math.max(5, tempPct))}%"></div></div>
-          <span>${Math.round(pc.cpuTemp)}°C</span>
+          <div class="meter-track"><div id="doc-temp-fill" class="meter-fill ${pc.cpuTemp >= 80 ? 'is-suspicion' : 'is-trust'}" style="width:${Math.min(100, Math.max(5, tempPct))}%"></div></div>
+          <span id="doc-temp-text">${Math.round(pc.cpuTemp)}°C</span>
         </div>
         <div class="meter-row">
           <label>Saúde PC</label>
-          <div class="meter-track"><div class="meter-fill is-trust" style="width:${Math.round(pc.pcHealth)}%"></div></div>
-          <span>${Math.round(pc.pcHealth)}%</span>
+          <div class="meter-track"><div id="doc-health-fill" class="meter-fill is-trust" style="width:${Math.round(pc.pcHealth)}%"></div></div>
+          <span id="doc-health-text">${Math.round(pc.pcHealth)}%</span>
         </div>
         <div class="meter-row">
           <label>Poeira</label>
-          <div class="meter-track"><div class="meter-fill is-patience" style="width:${Math.round(pc.dustLevel)}%"></div></div>
-          <span>${Math.round(pc.dustLevel)}%</span>
+          <div class="meter-track"><div id="doc-dust-fill" class="meter-fill is-patience" style="width:${Math.round(pc.dustLevel)}%"></div></div>
+          <span id="doc-dust-text">${Math.round(pc.dustLevel)}%</span>
         </div>
       </div>
 

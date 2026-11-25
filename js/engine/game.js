@@ -37,12 +37,13 @@ export class CentralGame {
     this.operatorMode = 'idle';
     this.lastToast = '';
     this.timerId = null;
+    this.callSessionSeq = 0;
 
     soundEngine.syncSettings(this.aiConfig);
     soundEngine.setSpeakingCallback((speaking) => {
       this.isSpeaking = speaking;
       this.syncOperatorMood();
-      this.emit();
+      this.emit('speaking');
     });
   }
 
@@ -79,7 +80,8 @@ export class CentralGame {
   onSecondTick() {
     if (this.state.gameOver || this.state.lastShiftReport) return;
 
-    // Gentle crypto market oscillation every 6 seconds
+    let structuralChange = false;
+
     if (this.state.shiftTimeLeft % 6 === 0) {
       const delta = (Math.random() - 0.48) * 0.06;
       this.state.cryptoRate = Number(clamp(this.state.cryptoRate + delta, 0.9, 1.32).toFixed(2));
@@ -87,8 +89,10 @@ export class CentralGame {
 
     const hw = tickHardware(this.state, 1);
     if (hw.faultOccurred === 'looseCable') {
+      structuralChange = true;
       this.notify('Alerta de Hardware: Cabo SATA soltou no gabinete!', true);
     } else if (hw.faultOccurred === 'burntCap') {
+      structuralChange = true;
       this.notify('Capacitor estufou no PC Doctor!', true);
     }
     if (hw.crashedNow) {
@@ -99,15 +103,16 @@ export class CentralGame {
         this.state.activeCall.status = 'lost';
       }
       this.emit('bsod');
+      return;
     }
 
     if (!this.state.pc.isCrashed) {
       this.state.shiftTimeLeft = Math.max(0, this.state.shiftTimeLeft - 1);
 
-      // Police Raid countdown & trigger
       if (this.state.policeRaid) {
         this.state.policeRaid.timeLeft -= 1;
         if (this.state.policeRaid.timeLeft <= 0) {
+          structuralChange = true;
           const res = resolvePoliceRaid(this.state, this.state.panicExcelMode);
           this.notify(res.message, !res.dodged);
           if (this.state.strikes >= this.state.maxStrikes) {
@@ -117,6 +122,7 @@ export class CentralGame {
         }
       } else if (this.state.policeHeat >= 82 && !this.state.panicExcelMode) {
         if (triggerPoliceRaid(this.state)) {
+          structuralChange = true;
           soundEngine.playPoliceSiren();
           this.notify('BATIDA POLICIAL! Ative o Modo Excel (Pânico) agora!', true);
         }
@@ -127,6 +133,7 @@ export class CentralGame {
         if (!call.onHold) {
           call.patience = Math.max(0, call.patience - 1);
           if (call.patience === 0) {
+            structuralChange = true;
             const victim = this.getActiveVictim();
             call.status = 'lost';
             call.messages.push({
@@ -149,11 +156,13 @@ export class CentralGame {
           for (let i = 0; i < factsCount; i += 1) {
             if (!call.revealedFacts.includes(i)) {
               call.revealedFacts.push(i);
+              structuralChange = true;
               soundEngine.playRepair();
             }
           }
           if (call.traceProgress >= 100) {
             call.isTracing = false;
+            structuralChange = true;
             this.notify('GeoTrace concluído! Todos os fatos do dossiê estão disponíveis.');
           }
         }
@@ -161,12 +170,13 @@ export class CentralGame {
 
       if (this.state.shiftTimeLeft === 0) {
         this.finishShift();
+        return;
       }
     }
 
     this.syncOperatorMood();
     persistState(this.state);
-    this.emit('tick');
+    this.emit(structuralChange ? 'update' : 'tick');
   }
 
   getActiveVictim() {
@@ -198,36 +208,49 @@ export class CentralGame {
       this.notify('PC em Tela Azul! Reinicie no PC Doctor.', true);
       return;
     }
+
+    soundEngine.stopSpeech();
+    soundEngine.stopLineHum();
+    soundEngine.toggleHoldMusic(false);
+    this.isSending = false;
+    this.callSessionSeq += 1;
+    const seq = this.callSessionSeq;
+
     const call = startCallState(this.state, victimId);
     if (!call) return;
 
     const victim = this.getActiveVictim();
     soundEngine.playDial();
     soundEngine.startLineHum();
-    soundEngine.toggleHoldMusic(false);
     this.syncOperatorMood();
     persistState(this.state);
     this.emit('call-start');
 
     setTimeout(() => {
-      if (this.state.activeCall?.victimId === victimId) {
-        soundEngine.speakVictim(victim.openingLine, victim.voiceProfile);
+      if (this.callSessionSeq === seq && this.state.activeCall?.victimId === victimId) {
+        this.speakWithNotification(victim.openingLine, victim.voiceProfile);
       }
     }, 450);
   }
 
   hangUpCall() {
-    if (!this.state.activeCall) return;
+    this.callSessionSeq += 1;
+    this.isSending = false;
     soundEngine.stopSpeech();
     soundEngine.stopLineHum();
     soundEngine.toggleHoldMusic(false);
-    if (this.state.activeCall.status === 'active') {
-      this.state.activeCall.status = 'lost';
-    }
-    this.state.activeCall.isTracing = false;
+    if (!this.state.activeCall) return;
+    this.state.activeCall = null;
     this.syncOperatorMood();
     persistState(this.state);
-    this.emit();
+    this.emit('call-end');
+  }
+
+  async speakWithNotification(text, voiceProfile) {
+    const res = await soundEngine.speakVictim(text, voiceProfile);
+    if (res && res.error) {
+      this.notify(`Voz neural falhou (${res.error}) — usando voz do navegador.`, true);
+    }
   }
 
   toggleHold() {
@@ -356,11 +379,16 @@ export class CentralGame {
     }
 
     this.isSending = true;
+    const seq = this.callSessionSeq;
     this.syncOperatorMood();
     this.emit('sending');
 
     const aiResult = await requestVictimReply(this.aiConfig, victim, call, text);
+    if (this.callSessionSeq !== seq || this.state.activeCall !== call) {
+      return;
+    }
     this.isSending = false;
+    call.lastSource = aiResult.source || this.aiConfig.provider;
 
     const { triggeredVirus } = applyCallTurnResult(this.state, victim, aiResult, text);
 
@@ -378,7 +406,7 @@ export class CentralGame {
     }
 
     if (aiResult.warning) {
-      this.notify(`Fallback local (${aiResult.warning})`);
+      this.notify(`Fallback local (${aiResult.warning})`, true);
     }
 
     this.syncOperatorMood();
@@ -387,7 +415,7 @@ export class CentralGame {
 
     const lastMsg = call.messages[call.messages.length - 1];
     if (lastMsg && lastMsg.role === 'victim') {
-      soundEngine.speakVictim(lastMsg.text, victim.voiceProfile);
+      this.speakWithNotification(lastMsg.text, victim.voiceProfile);
     }
   }
 
@@ -397,7 +425,7 @@ export class CentralGame {
     if (!call || !victim) return;
     const lastVictimMsg = [...call.messages].reverse().find((m) => m.role === 'victim');
     if (lastVictimMsg) {
-      soundEngine.speakVictim(lastVictimMsg.text, victim.voiceProfile);
+      this.speakWithNotification(lastVictimMsg.text, victim.voiceProfile);
     }
   }
 
@@ -482,7 +510,7 @@ export class CentralGame {
   }
 
   updateAiConfig(partial) {
-    this.aiConfig = {
+    const next = {
       ...this.aiConfig,
       ...partial,
       keysByProvider: {
@@ -490,6 +518,17 @@ export class CentralGame {
         ...(partial.keysByProvider || {})
       }
     };
+
+    // Auto-upgrade from robotic browser voice when a Gemini or OpenAI key is saved
+    if (!partial.ttsProvider && next.ttsProvider === 'browser') {
+      if (next.provider === 'gemini' && next.keysByProvider.gemini?.trim()) {
+        next.ttsProvider = 'gemini_tts';
+      } else if (next.provider === 'openai' && next.keysByProvider.openai?.trim()) {
+        next.ttsProvider = 'openai';
+      }
+    }
+
+    this.aiConfig = next;
     persistAiConfig(this.aiConfig);
     soundEngine.syncSettings(this.aiConfig);
     this.emit('config');

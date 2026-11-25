@@ -1,3 +1,22 @@
+export function decodePcm16ToFloat32(bytes) {
+  const sampleCount = Math.floor(bytes.length / 2);
+  const out = new Float32Array(sampleCount);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+  for (let i = 0; i < sampleCount; i += 1) {
+    out[i] = view.getInt16(i * 2, true) / 32768;
+  }
+  return out;
+}
+
+function decodeBase64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return bytes;
+}
+
 class SoundEngine {
   constructor() {
     this.ctx = null;
@@ -11,13 +30,14 @@ class SoundEngine {
     this.voiceSpeed = 1.0;
     this.ttsProvider = 'browser';
     this.browserVoiceName = '';
+    this.geminiTtsKey = '';
     this.elevenLabsKey = '';
     this.elevenLabsModel = 'eleven_flash_v2_5';
     this.openaiTtsKey = '';
     this.openaiTtsModel = 'gpt-4o-mini-tts';
     this.customTtsEndpoint = '';
     this.customTtsVoice = 'pf_dora';
-    this.phoneFilter = true;
+    this.phoneFilter = false;
   }
 
   syncSettings(aiConfig) {
@@ -27,13 +47,14 @@ class SoundEngine {
     this.voiceSpeed = Number.isFinite(aiConfig.voiceSpeed) ? aiConfig.voiceSpeed : 1.0;
     this.ttsProvider = aiConfig.ttsProvider || 'browser';
     this.browserVoiceName = aiConfig.browserVoiceName || '';
+    this.geminiTtsKey = (aiConfig.geminiTtsKey || aiConfig.keysByProvider?.gemini || '').trim();
     this.elevenLabsKey = (aiConfig.elevenLabsKey || '').trim();
     this.elevenLabsModel = aiConfig.elevenLabsModel || 'eleven_flash_v2_5';
     this.openaiTtsKey = (aiConfig.openaiTtsKey || aiConfig.keysByProvider?.openai || '').trim();
     this.openaiTtsModel = aiConfig.openaiTtsModel || 'gpt-4o-mini-tts';
     this.customTtsEndpoint = (aiConfig.customTtsEndpoint || '').trim();
     this.customTtsVoice = (aiConfig.customTtsVoice || 'pf_dora').trim();
-    this.phoneFilter = aiConfig.phoneFilter !== false;
+    this.phoneFilter = Boolean(aiConfig.phoneFilter);
   }
 
   setSpeakingCallback(cb) {
@@ -251,31 +272,29 @@ class SoundEngine {
     return target || ranked[0];
   }
 
-  async playAudioBufferWithPhonePipeline(arrayBuffer, speed = 1.0) {
+  async playAudioBuffer(decodedBuffer, speed = 1.0) {
     const ctx = this.ensureCtx();
     if (!ctx) return false;
 
-    const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
     const source = ctx.createBufferSource();
-    source.buffer = decoded;
+    source.buffer = decodedBuffer;
     source.playbackRate.value = Math.max(0.75, Math.min(1.35, speed));
 
     const masterGain = ctx.createGain();
     masterGain.gain.value = this.volume;
 
     if (this.phoneFilter) {
-      // Realistic telephone voiceband shaping (320Hz - 3300Hz) + compression
       const highpass = ctx.createBiquadFilter();
       highpass.type = 'highpass';
-      highpass.frequency.value = 310;
+      highpass.frequency.value = 260;
 
       const lowpass = ctx.createBiquadFilter();
       lowpass.type = 'lowpass';
-      lowpass.frequency.value = 3300;
+      lowpass.frequency.value = 3800;
 
       const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -20;
-      comp.ratio.value = 4;
+      comp.threshold.value = -18;
+      comp.ratio.value = 3.5;
 
       source.connect(highpass);
       highpass.connect(lowpass);
@@ -295,6 +314,62 @@ class SoundEngine {
     };
     source.start();
     return true;
+  }
+
+  async playEncodedAudioWithPhonePipeline(arrayBuffer, speed = 1.0) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return false;
+    const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    return this.playAudioBuffer(decoded, speed);
+  }
+
+  async playRawPcmWithPhonePipeline(bytes, sampleRate = 24000, speed = 1.0) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return false;
+    const floats = decodePcm16ToFloat32(bytes);
+    if (!floats.length) return false;
+    const audioBuffer = ctx.createBuffer(1, floats.length, sampleRate);
+    audioBuffer.copyToChannel(floats, 0);
+    return this.playAudioBuffer(audioBuffer, speed);
+  }
+
+  async fetchGeminiTtsAudio(text, voiceProfile) {
+    if (!this.geminiTtsKey) throw new Error('Nenhuma API Key do Gemini configurada para TTS.');
+    const voiceName = voiceProfile.geminiVoice || (voiceProfile.gender === 'male' ? 'Charon' : 'Leda');
+    const styleHint = voiceProfile.voiceInstruction || 'Fale em português do Brasil natural e humano ao telefone.';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${encodeURIComponent(this.geminiTtsKey)}`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: `${styleHint}\nDiga apenas a fala abaixo sem narração:\n"${text}"` }]
+          }
+        ],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName }
+            }
+          }
+        }
+      })
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      throw new Error(`Gemini TTS HTTP ${res.status}: ${err.slice(0, 120)}`);
+    }
+    const data = await res.json();
+    const inline = data.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)?.inlineData;
+    if (!inline?.data) {
+      throw new Error('Gemini TTS não retornou áudio.');
+    }
+    const rateMatch = String(inline.mimeType || '').match(/rate=(\d+)/i);
+    const sampleRate = rateMatch ? Number(rateMatch[1]) : 24000;
+    return { bytes: decodeBase64ToBytes(inline.data), sampleRate };
   }
 
   async fetchElevenLabsAudio(text, voiceProfile) {
@@ -365,25 +440,30 @@ class SoundEngine {
   }
 
   async speakVictim(text, voiceProfile = {}) {
-    if (!this.voiceEnabled || !text) return;
+    if (!this.voiceEnabled || !text) return { ok: true, provider: 'muted' };
     this.stopSpeech();
 
+    let neuralError = '';
     try {
-      let buf = null;
-      if (this.ttsProvider === 'elevenlabs' && this.elevenLabsKey) {
-        buf = await this.fetchElevenLabsAudio(text, voiceProfile);
+      if (this.ttsProvider === 'gemini_tts') {
+        const pcm = await this.fetchGeminiTtsAudio(text, voiceProfile);
+        const played = await this.playRawPcmWithPhonePipeline(pcm.bytes, pcm.sampleRate, this.voiceSpeed);
+        if (played) return { ok: true, provider: 'gemini_tts' };
+      } else if (this.ttsProvider === 'elevenlabs' && this.elevenLabsKey) {
+        const buf = await this.fetchElevenLabsAudio(text, voiceProfile);
+        const played = await this.playEncodedAudioWithPhonePipeline(buf, this.voiceSpeed);
+        if (played) return { ok: true, provider: 'elevenlabs' };
       } else if (this.ttsProvider === 'openai' && this.openaiTtsKey) {
-        buf = await this.fetchOpenAiTtsAudio(text, voiceProfile);
+        const buf = await this.fetchOpenAiTtsAudio(text, voiceProfile);
+        const played = await this.playEncodedAudioWithPhonePipeline(buf, 1.0);
+        if (played) return { ok: true, provider: 'openai' };
       } else if (this.ttsProvider === 'custom_tts' && this.customTtsEndpoint) {
-        buf = await this.fetchCustomTtsAudio(text, voiceProfile);
+        const buf = await this.fetchCustomTtsAudio(text, voiceProfile);
+        const played = await this.playEncodedAudioWithPhonePipeline(buf, 1.0);
+        if (played) return { ok: true, provider: 'custom_tts' };
       }
-
-      if (buf) {
-        const played = await this.playAudioBufferWithPhonePipeline(buf, this.ttsProvider === 'elevenlabs' ? this.voiceSpeed : 1.0);
-        if (played) return;
-      }
-    } catch {
-      // Fallback to browser ranked neural voice
+    } catch (err) {
+      neuralError = err instanceof Error ? err.message : String(err);
     }
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -400,17 +480,26 @@ class SoundEngine {
       utter.onerror = () => this.speakingCallback?.(false);
 
       window.speechSynthesis.speak(utter);
+      return {
+        ok: !neuralError,
+        provider: neuralError ? 'browser-fallback' : 'browser',
+        voiceName: voice?.name || 'padrão',
+        error: neuralError
+      };
     }
+
+    return { ok: false, provider: 'none', error: neuralError || 'TTS indisponível.' };
   }
 
   async previewVoice(aiConfig) {
     this.syncSettings(aiConfig);
-    await this.speakVictim(
+    return this.speakVictim(
       'Alô? Aqui é do escritório, estou testando a qualidade da voz na linha telefônica.',
       {
         gender: 'female',
         pitch: 1.04,
         rate: 1.0,
+        geminiVoice: 'Leda',
         openaiVoice: 'nova',
         elevenLabsVoiceId: 'EXAVITQu4vr4xnSDxMaL',
         voiceInstruction: 'Fale em português do Brasil de forma natural e clara ao telefone.'

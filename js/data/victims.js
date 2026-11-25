@@ -20,6 +20,7 @@ export const VICTIMS = [
       rate: 0.94,
       gender: 'female',
       openaiVoice: 'nova',
+      geminiVoice: 'Leda',
       elevenLabsVoiceId: 'EXAVITQu4vr4xnSDxMaL',
       voiceInstruction: 'Fale em português do Brasil como uma senhora idosa simpática, preocupada e um pouco confusa com tecnologia ao telefone.'
     },
@@ -65,6 +66,7 @@ export const VICTIMS = [
       rate: 1.05,
       gender: 'male',
       openaiVoice: 'onyx',
+      geminiVoice: 'Charon',
       elevenLabsVoiceId: 'TxGEqnHWrfWFTfGW9XjX',
       voiceInstruction: 'Fale em português do Brasil com voz grave de mecânico apressado e ocupado no meio da oficina.'
     },
@@ -110,6 +112,7 @@ export const VICTIMS = [
       rate: 1.07,
       gender: 'male',
       openaiVoice: 'echo',
+      geminiVoice: 'Puck',
       elevenLabsVoiceId: 'VR6AewLTigWG4xSOukaG',
       voiceInstruction: 'Fale em português do Brasil como jovem analista de TI cansado, meio nervoso com prazo.'
     },
@@ -155,6 +158,7 @@ export const VICTIMS = [
       rate: 1.1,
       gender: 'female',
       openaiVoice: 'shimmer',
+      geminiVoice: 'Zephyr',
       elevenLabsVoiceId: '21m00Tcm4TlvDq8ikWAM',
       voiceInstruction: 'Fale em português do Brasil como influenciadora jovem falante, expressiva e preocupada com redes sociais.'
     },
@@ -200,6 +204,7 @@ export const VICTIMS = [
       rate: 0.92,
       gender: 'male',
       openaiVoice: 'onyx',
+      geminiVoice: 'Orus',
       elevenLabsVoiceId: 'pNInz6obpgDQGcFmaJgB',
       voiceInstruction: 'Fale em português do Brasil com tom sério, formal e autoritário de médico diretor.'
     },
@@ -245,6 +250,7 @@ export const VICTIMS = [
       rate: 1.0,
       gender: 'female',
       openaiVoice: 'alloy',
+      geminiVoice: 'Kore',
       elevenLabsVoiceId: 'MF3mGyEYCl7XYWbV9V6O',
       voiceInstruction: 'Fale em português do Brasil como gerente corporativa metódica, direta e desconfiada.'
     },
@@ -290,6 +296,7 @@ export const VICTIMS = [
       rate: 1.12,
       gender: 'male',
       openaiVoice: 'fable',
+      geminiVoice: 'Fenrir',
       elevenLabsVoiceId: 'yoZ06aMxZJJ28mfd3POQ',
       voiceInstruction: 'Fale em português do Brasil com tom irônico e exageradamente inocente, como alguém trolando um golpista.'
     },
@@ -335,6 +342,7 @@ export const VICTIMS = [
       rate: 1.04,
       gender: 'male',
       openaiVoice: 'onyx',
+      geminiVoice: 'Charon',
       elevenLabsVoiceId: 'TxGEqnHWrfWFTfGW9XjX',
       voiceInstruction: 'Fale em português do Brasil como empresário arrogante e impaciente acostumado a lidar com bancos private.'
     },
@@ -380,6 +388,7 @@ export const VICTIMS = [
       rate: 1.11,
       gender: 'female',
       openaiVoice: 'nova',
+      geminiVoice: 'Aoede',
       elevenLabsVoiceId: 'EXAVITQu4vr4xnSDxMaL',
       voiceInstruction: 'Fale em português do Brasil como engenheira de cibersegurança cética, rápida e provocadora.'
     },

@@ -12,6 +12,7 @@ import {
   DEFAULT_AI_CONFIG,
   evaluateShift,
   inspectRemoteFile,
+  loadAiConfig,
   redeemSecretCode,
   repairPart,
   resolvePoliceRaid,
@@ -23,20 +24,50 @@ import {
   triggerPoliceRaid
 } from '../js/state.js';
 import { AI_PROVIDERS, generateOfflineReply, getActiveApiKey, parseAiResponse } from '../js/engine/ai-client.js';
+import { decodePcm16ToFloat32 } from '../js/engine/audio.js';
+import { CentralGame } from '../js/engine/game.js';
 
-test('supports 10+ AI providers with per-provider key vault and JSON parser', () => {
+test('supports 10+ AI providers, legacy key migration, and JSON/think parsing', () => {
   assert.ok(Object.keys(AI_PROVIDERS).length >= 11);
   const cfg = structuredClone(DEFAULT_AI_CONFIG);
   cfg.provider = 'anthropic';
   cfg.keysByProvider.anthropic = 'sk-ant-test-123';
   assert.equal(getActiveApiKey(cfg), 'sk-ant-test-123');
 
-  const clean = parseAiResponse('{"reply":"Oi, tudo bem?","trustDelta":15,"suspicionDelta":-5,"mood":"convinced","revealSecret":true}');
+  // Legacy migration from central98_ai_v1 auto-activates Gemini neural TTS
+  const fakeStorage = {
+    getItem: (k) => (k === 'central98_ai_v1' ? JSON.stringify({ provider: 'gemini', apiKey: 'AIza-demo', model: 'gemini-2.5-flash' }) : null)
+  };
+  const migrated = loadAiConfig(fakeStorage);
+  assert.equal(migrated.provider, 'gemini');
+  assert.equal(migrated.keysByProvider.gemini, 'AIza-demo');
+  assert.equal(migrated.ttsProvider, 'gemini_tts');
+
+  const clean = parseAiResponse('<think>reasoning...</think>\n{"reply":"Oi, tudo bem?","trustDelta":15,"suspicionDelta":-5,"mood":"convinced","revealSecret":true}');
   assert.equal(clean.reply, 'Oi, tudo bem?');
   assert.equal(clean.revealSecret, true);
 
   const fenced = parseAiResponse('```json\n{"reply":"Certo.","trustDelta":10,"mood":"calm"}\n```');
   assert.equal(fenced.reply, 'Certo.');
+});
+
+test('decodePcm16ToFloat32 decodes 16-bit signed PCM into normalized [-1, 1] floats', () => {
+  const bytes = new Uint8Array([0x00, 0x00, 0xff, 0x7f, 0x00, 0x80]);
+  const floats = decodePcm16ToFloat32(bytes);
+  assert.equal(floats.length, 3);
+  assert.equal(floats[0], 0);
+  assert.ok(floats[1] > 0.99 && floats[1] <= 1);
+  assert.equal(floats[2], -1);
+});
+
+test('hangUpCall clears activeCall cleanly and allows immediate re-dialing', () => {
+  const game = new CentralGame();
+  game.dialVictim('dona_marlene');
+  assert.equal(game.state.activeCall.victimId, 'dona_marlene');
+  game.hangUpCall();
+  assert.equal(game.state.activeCall, null);
+  game.dialVictim('cleber_oficina');
+  assert.equal(game.state.activeCall.victimId, 'cleber_oficina');
 });
 
 test('AnyControl remote desktop, black curtain, FakeScan and FakeShield flow', () => {

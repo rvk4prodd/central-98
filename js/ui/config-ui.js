@@ -16,6 +16,8 @@ export class ConfigUi {
     this.activeTab = 'ai'; // 'ai' | 'voice' | 'avatar'
     this.testStatus = '';
     this.testOk = null;
+    this.voiceStatus = '';
+    this.voiceOk = null;
     this.bindEvents();
   }
 
@@ -52,7 +54,18 @@ export class ConfigUi {
         this.game.clearCurrentProviderKey();
       } else if (act === 'preview-voice') {
         this.saveVoiceInputs();
-        await soundEngine.previewVoice(this.game.aiConfig);
+        this.voiceStatus = 'Gerando áudio de teste...';
+        this.voiceOk = null;
+        this.render();
+        const res = await soundEngine.previewVoice(this.game.aiConfig);
+        if (res?.error) {
+          this.voiceStatus = `Erro TTS (${res.error}) — fallback: ${res.voiceName || 'navegador'}`;
+          this.voiceOk = false;
+        } else {
+          this.voiceStatus = `Tocando via ${res?.provider || 'navegador'}${res?.voiceName ? ` (${res.voiceName})` : ''}.`;
+          this.voiceOk = true;
+        }
+        this.render();
       } else if (act === 'reset-save') {
         if (window.confirm('Apagar todo o progresso do jogo e começar do Dia 1?')) {
           this.game.resetCampaign();
@@ -115,6 +128,7 @@ export class ConfigUi {
   }
 
   saveVoiceInputs() {
+    const geminiTtsKey = document.getElementById('cfg-gemini-tts-key')?.value ?? this.game.aiConfig.geminiTtsKey;
     const elevenLabsKey = document.getElementById('cfg-eleven-key')?.value ?? this.game.aiConfig.elevenLabsKey;
     const elevenLabsModel = document.getElementById('cfg-eleven-model')?.value ?? this.game.aiConfig.elevenLabsModel;
     const openaiTtsKey = document.getElementById('cfg-openai-tts-key')?.value ?? this.game.aiConfig.openaiTtsKey;
@@ -122,6 +136,7 @@ export class ConfigUi {
     const customTtsEndpoint = document.getElementById('cfg-custom-tts-url')?.value ?? this.game.aiConfig.customTtsEndpoint;
     const customTtsVoice = document.getElementById('cfg-custom-tts-voice')?.value ?? this.game.aiConfig.customTtsVoice;
     this.game.updateAiConfig({
+      geminiTtsKey: geminiTtsKey.trim(),
       elevenLabsKey: elevenLabsKey.trim(),
       elevenLabsModel: elevenLabsModel.trim(),
       openaiTtsKey: openaiTtsKey.trim(),
@@ -149,23 +164,34 @@ export class ConfigUi {
           (v) => `<option value="${escapeHtml(v.name)}" ${cfg.browserVoiceName === v.name ? 'selected' : ''}>${escapeHtml(v.name)} (${escapeHtml(v.lang)})</option>`
         )
       ].join('');
+      const vStatusClass = this.voiceOk === true ? 'is-ok' : this.voiceOk === false ? 'is-bad' : '';
 
       this.el.innerHTML = `
         ${tabs}
         <form id="voice-config-form" class="cfg-form">
           <div class="cfg-notice">
-            Escolha um motor neural real (ElevenLabs, OpenAI <code>gpt-4o-mini-tts</code>, servidor local Kokoro/Qwen3) ou selecione a melhor voz Natural do seu navegador.
+            Para vozes humanas de verdade, use <strong>Google Gemini Neural TTS</strong> (funciona direto com sua chave Gemini!), <strong>ElevenLabs</strong> ou <strong>OpenAI gpt-4o-mini-tts</strong>.
           </div>
 
           <label class="cfg-field">
             <span>Motor de Voz das Vítimas (TTS)</span>
             <select id="cfg-tts-provider" class="win-input">
-              <option value="browser" ${cfg.ttsProvider === 'browser' ? 'selected' : ''}>Navegador (Vozes Naturais PT-BR ranqueadas)</option>
+              <option value="gemini_tts" ${cfg.ttsProvider === 'gemini_tts' ? 'selected' : ''}>Google Gemini 2.5 Neural TTS (Usa sua chave Gemini!)</option>
               <option value="elevenlabs" ${cfg.ttsProvider === 'elevenlabs' ? 'selected' : ''}>ElevenLabs Flash v2.5 (Ultra-Realista)</option>
               <option value="openai" ${cfg.ttsProvider === 'openai' ? 'selected' : ''}>OpenAI gpt-4o-mini-tts (Expressivo)</option>
               <option value="custom_tts" ${cfg.ttsProvider === 'custom_tts' ? 'selected' : ''}>Servidor Local TTS (Kokoro / Qwen3 / Edge-TTS)</option>
+              <option value="browser" ${cfg.ttsProvider === 'browser' ? 'selected' : ''}>Navegador (Vozes do Sistema — pode soar robótico)</option>
             </select>
           </label>
+
+          ${
+            cfg.ttsProvider === 'gemini_tts'
+              ? `<label class="cfg-field">
+                   <span>Gemini API Key para Voz (deixe vazio para usar a mesma da aba IA)</span>
+                   <input id="cfg-gemini-tts-key" type="password" class="win-input" value="${escapeHtml(cfg.geminiTtsKey)}" placeholder="${cfg.keysByProvider?.gemini ? 'Usando chave Gemini já salva na aba IA' : 'AIza...'}" />
+                 </label>`
+              : ''
+          }
 
           ${
             cfg.ttsProvider === 'browser'
@@ -248,6 +274,7 @@ export class ConfigUi {
             <button type="submit" class="win-btn win-btn-primary">Salvar Áudio</button>
             <button type="button" class="win-btn" data-cfg-action="preview-voice">Testar Voz Agora</button>
           </div>
+          ${this.voiceStatus ? `<div class="status-pill ${vStatusClass}">${escapeHtml(this.voiceStatus)}</div>` : ''}
         </form>
       `;
       return;

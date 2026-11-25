@@ -76,8 +76,18 @@ function bootstrap() {
   }
   requestAnimationFrame(animateCanvases);
 
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  const isLocalHost = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+  if ('serviceWorker' in navigator) {
+    if (isLocalHost) {
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((r) => r.unregister());
+      });
+      if ('caches' in window) {
+        caches.keys().then((keys) => keys.forEach((k) => caches.delete(k)));
+      }
+    } else if (location.protocol.startsWith('https')) {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    }
   }
 }
 
